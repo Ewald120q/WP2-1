@@ -5,11 +5,12 @@
     "resolution": 256,
     "model_name": "DM_time_binary_classificator_241002_3",
     "files_by_resolution": {
-        "256": "B0531+21_59000_48386_DM_time_dataset_realbased_training.npy",
-        "default": "B0531+21_59000_48386_DM_time_dataset_realbased_training_{res}x{res}.npy"
+        "256": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch.npy",
+        "default": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch_{res}x{res}.npy"
     },
-    "labels": "B0531+21_59000_48386_DM_time_dataset_realbased_labels_training.npy",
+    "labels": "B0531+21_59000_48386_DM_time_dataset_realbased_labels_training_pytorch.npy",
     "learning_rate": 0.0001,
     "num_epochs": 100,
-    "patience": 5
+    "patience": 5,
+    "batch_size": 32
 }

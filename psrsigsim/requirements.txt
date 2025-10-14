@@ -1,0 +1,44 @@
+astropy==4.3.1
+certifi==2020.6.20
+corner==2.2.1
+cycler==0.11.0
+#decorator @ file:///opt/conda/conda-bld/decorator_1643638310831/work
+emcee==3.1.6
+#entrypoints @ file:///tmp/build/80754af9/entrypoints_1649908585034/work
+fitsio==0.9.12
+fonttools==4.38.0
+future==1.0.0
+importlib-metadata==6.7.0
+#ipykernel @ file:///home/conda/feedstock_root/build_artifacts/ipykernel_1620912939357/work/dist/ipykernel-5.5.5-py3-none-any.whl
+ipython==5.8.0
+#ipython-genutils @ file:///tmp/build/80754af9/ipython_genutils_1606773439826/work
+jplephem==2.23
+jupyter-client==5.3.4
+jupyter_core==4.12.0
+kiwisolver==1.4.5
+loguru==0.7.3
+matplotlib==3.5.3pip 
+numpy==1.19.0
+packaging==24.0
+pdat==0.2.2
+#pexpect @ file:///tmp/build/80754af9/pexpect_1605563209008/work
+#pickleshare @ file:///tmp/build/80754af9/pickleshare_1606932040724/work
+Pillow==9.5.0
+pint-pulsar==0.8.8
+prompt-toolkit==1.0.15
+psrsigsim==1.0.1
+#ptyprocess @ file:///tmp/build/80754af9/ptyprocess_1609355006118/work/dist/ptyprocess-0.7.0-py2.py3-none-any.whl
+pyerfa==2.0.0.3
+#Pygments @ file:///opt/conda/conda-bld/pygments_1644249106324/work
+pyparsing==3.1.4
+python-dateutil==2.9.0.post0
+pyzmq==19.0.2
+scipy==1.7.3
+simplegeneric==0.8.1
+six==1.17.0
+tornado==5.1.1
+#traitlets @ file:///tmp/build/80754af9/traitlets_1636710298902/work
+typing_extensions==4.7.1
+uncertainties==3.1.7
+#wcwidth @ file:///Users/ktietz/demo/mc3/conda-bld/wcwidth_1629357192024/work
+zipp==3.15.0

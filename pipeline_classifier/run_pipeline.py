@@ -30,8 +30,10 @@ for command in commands:
     
 
 # 3. Running run_inference.py and waiting for it to finish
-tensorflow_inference_command = f'singularity exec -B $PWD -B {config["path_to_models"]} {config["path_to_tensorflow_psrdada_singularity_image"]} python3 run_inference.py -c {args.config}'
-run_command(tensorflow_inference_command, wait=True)
+pytorch_inference_command = f'singularity exec -B $PWD -B {config["path_to_models"]} {config["path_to_tensorflow_psrdada_singularity_image"]} python3 run_inference.py -c {args.config}'
+### 3. Running run_inference.py and waiting for it to finish (using local Python environment)
+###pytorch_inference_command = f'python run_inference.py -c {args.config}'
+run_command(pytorch_inference_command, wait=True)
 
 
 # 4. Killing proceses

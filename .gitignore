@@ -8,3 +8,7 @@
 *.fil
 *.dat
 *.cands
+*.png
+*.pth
+*.inf
+./testrun3
