@@ -167,6 +167,31 @@ class DMTimeDataSetCreator:
         print(f"Saved {shard_idx} DM-time shard(s) to {self.dm_time_shard_dir}")
         print(f"DM-time shard manifest written to {manifest_path}")
 
+    @staticmethod
+    def _shuffle_in_unison(arrays, seed=None):
+        """
+        Shuffle multiple numpy arrays consistently along their first axis.
+
+        Args:
+            arrays (list[np.ndarray]): Arrays to shuffle jointly.
+            seed (int, optional): Seed for deterministic shuffling.
+        """
+        if not arrays:
+            return
+
+        length = arrays[0].shape[0]
+        for arr in arrays[1:]:
+            if arr.shape[0] != length:
+                raise ValueError("All arrays must share the same length to shuffle together.")
+
+        rng = np.random.default_rng(seed)
+        for i in range(length - 1, 0, -1):
+            j = rng.integers(0, i + 1)
+            if i == j:
+                continue
+            for arr in arrays:
+                arr[[i, j]] = arr[[j, i]]
+
     def _get_position_in_filfile(self, mjd_pulse):
         """
         Calculate the position of a pulse in the filterbank file based on its MJD.
@@ -311,9 +336,13 @@ class DMTimeDataSetCreator:
         return exclude_positions
 
 
-    def process(self, shuffle=False):
+    def process(self, shuffle=True, shuffle_seed=None):
         """
         Main function to process candidates and create the DM-Time dataset.
+
+        Args:
+            shuffle (bool, optional): Whether to shuffle before sharding. Defaults to True.
+            shuffle_seed (int, optional): Seed for deterministic shuffling.
 
         Steps:
             1. Load and categorize candidates.
@@ -365,18 +394,10 @@ class DMTimeDataSetCreator:
             ['Artefact'] * (len(dataset_with_bbrfi) + len(dataset_with_rest))
         )
         if shuffle:
-            print("shuffle data")
-            # Shuffle data and labels
-            indices = np.random.permutation(len(data))
-            print("shuffle 1")
-            data = data[indices]
-            print("shuffle 2")
-            labels = labels[indices]
-            print("shuffle 1")
-            metadata = metadata[indices]
-            print("save data")
+            print("Shuffling data, metadata, and labels before sharding ...")
+            self._shuffle_in_unison([data, metadata, labels], seed=shuffle_seed)
         else:
-            print("Warning: Consider that the data isnt shuffled! To shuffle it before saving as .npy, use 'shuffle=True'")
+            print("Warning: dataset is not shuffled before sharding. Pass shuffle=True to randomize order.")
         # Save DM-time dataset shards
         self._save_dm_time_shards(data)
         del data
