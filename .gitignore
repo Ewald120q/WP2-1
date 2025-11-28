@@ -14,3 +14,4 @@
 ./testrun3
 single_pulse_classifier_training/checkpoints/*
 single_pulse_classifier_training/data/*
+single_pulse_classifier_training/tensorboard_runs

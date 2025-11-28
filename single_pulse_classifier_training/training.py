@@ -5,14 +5,25 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import StratifiedShuffleSplit
 import numpy as np
 import matplotlib.pyplot as plt
 from training_models import models_htable
 from tqdm import tqdm
 import math
+from datetime import datetime
 
 from DMTimeShardDataset import *
+
+
+def _slugify_component(value, default):
+    """Create a filesystem-friendly component for TensorBoard paths."""
+    if value is None:
+        return default
+    safe = ''.join(ch if ch.isalnum() or ch in ['-', '_', '.'] else '-' for ch in str(value))
+    safe = safe.strip('-_.')
+    return safe if safe else default
 
 # Function to load the configuration file
 def load_config(config_path):
@@ -80,8 +91,7 @@ def label_encoding(labels):
     print(f"Converting string labels to numeric: {np.unique(labels)} -> {[map_dict[str(l)] for l in np.unique(labels)]}")
     return np.array([map_dict[str(i)] for i in labels])
 
-
-def main():
+def train(config):
     # Check for GPU availability
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
@@ -90,14 +100,31 @@ def main():
     else:
         print("No GPU found, using CPU")
         
-    # Load configuration file
-    config_path = sys.argv[1]
-    config = load_config(config_path)
-
     # Extract parameters from the configuration
     resolution = config["resolution"]
     model_name = config["model_name"]
     use_freq_time = config["use_freq_time"]
+
+    checkpoint_dir = os.path.join(config["path_to_checkpoints"], f'ch_point_{model_name}_{resolution}')
+
+    tensorboard_cfg = config.get("tensorboard", {})
+    configured_root = tensorboard_cfg.get("log_root") or config.get("tensorboard_log_dir")
+    default_tensorboard_root = os.path.join(checkpoint_dir, "tensorboard")
+    tensorboard_base = configured_root or default_tensorboard_root
+    experiment_component = _slugify_component(
+        tensorboard_cfg.get("experiment_name") or config.get("tensorboard_experiment"),
+        f"{model_name}_{resolution}"
+    )
+    run_component = _slugify_component(
+        tensorboard_cfg.get("run_name") or config.get("run_name"),
+        datetime.now().strftime("%Y%m%d-%H%M%S")
+    )
+    tensorboard_log_dir = os.path.join(tensorboard_base, experiment_component, run_component)
+    os.makedirs(tensorboard_log_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=tensorboard_log_dir)
+    writer.add_text("run/config", json.dumps(config, indent=2), 0)
+    writer.add_text("run/experiment", experiment_component, 0)
+    writer.add_text("run/name", run_component, 0)
     
     dataset_cfg = {
     "output_dir": config["path_to_files"],
@@ -143,10 +170,9 @@ def main():
     val_losses = []
     val_accuracies = []
     best_val_acc = 0.0
+    best_epoch = 0
     patience_counter = 0
     
-    checkpoint_dir = os.path.join(config["path_to_checkpoints"], f'ch_point_{model_name}_{resolution}')
-
     # Training loop
     for epoch in range(config["num_epochs"]):
         # Training phase
@@ -193,6 +219,10 @@ def main():
         val_acc = correct_val / total_val
         
         scheduler.step(val_loss)
+
+        writer.add_scalars('Loss', {'train': train_loss, 'val': val_loss}, epoch + 1)
+        writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch + 1)
+        writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch + 1)
         
         # Store metrics
         train_losses.append(train_loss)
@@ -207,9 +237,11 @@ def main():
         # Save checkpoint if validation accuracy improved
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            best_epoch = epoch + 1
             patience_counter = 0
             save_checkpoint(model, optimizer, epoch + 1, train_acc, val_acc, checkpoint_dir)
             print(f'New best validation accuracy: {val_acc:.4f} - Model saved!')
+            writer.add_scalar('Accuracy/best_val', best_val_acc, epoch + 1)
         else:
             patience_counter += 1
             
@@ -228,7 +260,7 @@ def main():
 
     # Plot training and validation loss and accuracy
     plt.clf()
-    plt.figure(figsize=(12, 4))
+    fig = plt.figure(figsize=(12, 4))
 
     # Loss plot
     plt.subplot(1, 2, 1)
@@ -253,11 +285,13 @@ def main():
     # Add a common title
     plt.suptitle(f'Model {model_name} performance for {resolution}x{resolution} resolution', fontsize=16)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    writer.add_figure('plots/loss_accuracy', fig, global_step=len(train_losses))
     plt.savefig(
         os.path.join(config["path_to_images"], f'accuracy_across_epochs_for_{model_name}_{resolution}x{resolution}.jpg'),
         format='jpg',
         dpi=300
     )
+    plt.close(fig)
 
     # Evaluate the model on the validation set
     model.eval()
@@ -279,15 +313,40 @@ def main():
             wrong_examples.append(metadata[predicted != labels].cpu().numpy())
             wrong_labels.append(labels[predicted != labels].cpu().numpy())
         
-        test_acc = correct / total
-        print(f'Test Accuracy: {test_acc}')
-        
-        
-        wrong_examples = np.concatenate(wrong_examples, axis=0)
-        wrong_labels = np.concatenate(wrong_labels, axis=0)
-        save_metadata(wrong_examples, wrong_labels, checkpoint_dir)
-        save_config(config, checkpoint_dir)
+    test_acc = correct / total
+    print(f'Test Accuracy: {test_acc}')
+    writer.add_scalar('Accuracy/test', test_acc, 0)
+    
+    wrong_examples = np.concatenate(wrong_examples, axis=0)
+    wrong_labels = np.concatenate(wrong_labels, axis=0)
+    save_metadata(wrong_examples, wrong_labels, checkpoint_dir)
+    save_config(config, checkpoint_dir)
+    
+    hparam_dict = {
+        'model_name': model_name,
+        'resolution': resolution,
+        'batch_size': config["batch_size"],
+        'learning_rate': config["learning_rate"],
+        'weight_decay': config["weight_decay"],
+        'use_freq_time': int(use_freq_time),
+    }
+    metric_dict = {
+        'metrics/best_val_acc': best_val_acc,
+        'metrics/test_acc': test_acc,
+        'metrics/final_val_loss': history['val_loss'][-1] if history['val_loss'] else float('nan'),
+        'metrics/best_epoch': best_epoch,
+    }
+    writer.add_hparams(hparam_dict, metric_dict, run_name='hparams')
 
+    writer.close()
+
+
+def main():        
+    # Load configuration file
+    config_path = sys.argv[1]
+    config = load_config(config_path)
+
+    train(config)
     
 
 
