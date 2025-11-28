@@ -129,7 +129,7 @@ def main():
     print("full dataset length: ", len(full_dataset))
 
     # Initialize the model
-    model = models_htable[model_name](resolution, use_freq_time).to(device)
+    model = models_htable[model_name](resolution, use_freq_time, device).to(device)
     
     
     # Setup optimizer and loss function
@@ -159,7 +159,7 @@ def main():
             labels = batch["label"].to(device)
             #labels = torch.nn.functional.one_hot(labels)
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(batch)
             loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
             loss.backward()
             optimizer.step()
@@ -180,10 +180,9 @@ def main():
         
         with torch.no_grad():
             for batch in val_loader:
-                inputs = batch.to(device)
                 #inputs = torch.unsqueeze(inputs, 1)
                 labels = batch["label"].to(device)
-                outputs = model(inputs)
+                outputs = model(batch)
                 loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
                 
                 val_running_loss += loss.item()
@@ -270,7 +269,7 @@ def main():
         for batch in val_loader:
             labels = batch["label"].to(device)
             metadata = batch["metadata"].to(device)
-            outputs = model(inputs)
+            outputs = model(batch)
 
             _, predicted = torch.max(outputs, 1)
             total += predicted.size(0)

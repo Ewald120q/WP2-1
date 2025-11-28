@@ -4,10 +4,11 @@ import torch.nn.functional as F
 
 
 class DMTimeBinaryClassificator241002_1(nn.Module):
-    def __init__(self, resol, use_freq_time=False):
+    def __init__(self, resol, use_freq_time, device):
         super(DMTimeBinaryClassificator241002_1, self).__init__()
         self.resol = resol
         self.use_freq_time = use_freq_time
+        self.device = device
         
         if resol == 256:
             self.conv1 = nn.Conv2d(1, 16, kernel_size=5, padding=0)
@@ -29,6 +30,11 @@ class DMTimeBinaryClassificator241002_1(nn.Module):
         self.fc2 = nn.Linear(self.fc1.out_features, 2)
     
     def forward(self, x):
+        if self.use_freq_time:
+            x  = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+            
         x = F.relu(self.conv1(x))
         x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
@@ -37,10 +43,11 @@ class DMTimeBinaryClassificator241002_1(nn.Module):
 
 
 class DMTimeBinaryClassificator241002_2(nn.Module):
-    def __init__(self, resol, use_freq_time=False):
+    def __init__(self, resol, use_freq_time, device):
         super(DMTimeBinaryClassificator241002_2, self).__init__()
         self.resol = resol
         self.use_freq_time = use_freq_time
+        self.device = device
         
         if resol == 256:
             self.conv1 = nn.Conv2d(1, 16, kernel_size=5, padding=0)
@@ -70,6 +77,11 @@ class DMTimeBinaryClassificator241002_2(nn.Module):
         self.fc2 = nn.Linear(self.fc1.out_features, 2)
     
     def forward(self, x):
+        if self.use_freq_time:
+            x  = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+            
         x = F.relu(self.conv1(x))
         x = self.pool1(x)
         x = F.relu(self.conv2(x))
@@ -80,10 +92,11 @@ class DMTimeBinaryClassificator241002_2(nn.Module):
 
 
 class DMTimeBinaryClassificator241002_3(nn.Module):
-    def __init__(self, resol, use_freq_time=False):
+    def __init__(self, resol, use_freq_time, device):
         super(DMTimeBinaryClassificator241002_3, self).__init__()
         self.resol = resol
         self.use_freq_time = use_freq_time
+        self.device = device
         
         if resol == 256:
             self.conv1 = nn.Conv2d(1, 8, kernel_size=5, padding=0)
@@ -121,6 +134,11 @@ class DMTimeBinaryClassificator241002_3(nn.Module):
         self.fc2 = nn.Linear(self.fc1.out_features, 2)
     
     def forward(self, x):
+        if self.use_freq_time:
+            x  = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+            
         x = F.relu(self.conv1(x))
         x = self.pool1(x)
         x = F.relu(self.conv2(x))
@@ -133,11 +151,13 @@ class DMTimeBinaryClassificator241002_3(nn.Module):
     
     
 class DMTimeBinaryClassificator241002_3_dropout(nn.Module):
-    def __init__(self, resol, use_freq_time):
+    def __init__(self, resol, use_freq_time, device):
         super(DMTimeBinaryClassificator241002_3_dropout, self).__init__()
         self.resol = resol
         self.dropout_conv = nn.Dropout2d(p=0.2)
         self.dropout_fc = nn.Dropout(p=0.4)
+        
+        self.device = device
         
         self.use_freq_time = use_freq_time
         
@@ -178,9 +198,10 @@ class DMTimeBinaryClassificator241002_3_dropout(nn.Module):
     
     def forward(self, x):
         if self.use_freq_time:
-            x  = x["freq_time"]
+            x  = x["freq_time"].to(self.device)
         else:
-            x = x["dm_time"]
+            x = x["dm_time"].to(self.device)
+            
         x = torch.unsqueeze(x, 1)
         
         x = F.relu(self.conv1(x))
@@ -196,17 +217,17 @@ class DMTimeBinaryClassificator241002_3_dropout(nn.Module):
         return x
 
 
-def model_DM_time_binary_classificator_241002_1(resol, use_freq_time=False):
-    return DMTimeBinaryClassificator241002_1(resol, use_freq_time)
+def model_DM_time_binary_classificator_241002_1(resol, use_freq_time, device):
+    return DMTimeBinaryClassificator241002_1(resol, use_freq_time,device)
 
-def model_DM_time_binary_classificator_241002_2(resol, use_freq_time=False):
-    return DMTimeBinaryClassificator241002_2(resol, use_freq_time)
+def model_DM_time_binary_classificator_241002_2(resol, use_freq_time, device):
+    return DMTimeBinaryClassificator241002_2(resol, use_freq_time, device)
 
-def model_DM_time_binary_classificator_241002_3(resol, use_freq_time=False):
-    return DMTimeBinaryClassificator241002_3(resol, use_freq_time)
+def model_DM_time_binary_classificator_241002_3(resol, use_freq_time, device):
+    return DMTimeBinaryClassificator241002_3(resol, use_freq_time, device)
 
-def model_DM_time_binary_classificator_241002_3_dropout(resol, use_freq_time=False):
-    return DMTimeBinaryClassificator241002_3_dropout(resol, use_freq_time)
+def model_DM_time_binary_classificator_241002_3_dropout(resol, use_freq_time, device):
+    return DMTimeBinaryClassificator241002_3_dropout(resol, use_freq_time, device)
 
 models_htable = {
     'DM_time_binary_classificator_241002_1': model_DM_time_binary_classificator_241002_1,
