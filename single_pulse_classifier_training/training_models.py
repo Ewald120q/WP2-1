@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ResNet import ResNet, BasicBlock
 
 
 class DMTimeBinaryClassificator241002_1(nn.Module):
@@ -285,6 +286,36 @@ class DMTimeBinaryClassificator241002_6_dropout(nn.Module):
         x = self.fc2(x)
         return x
 
+class DMTimeBinaryClassificatorResNet18(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet18, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+        
+        if resol != 256:
+            raise ValueError(f"ResNet18-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet18: BasicBlock + [2,2,2,2]
+        self.backbone = ResNet(
+            block=BasicBlock,
+            layers=[2, 2, 2, 2],
+            num_classes=2,
+            in_channels=1,
+        )
+
+    def forward(self, x):
+        if self.use_freq_time:
+            x = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+
+        # (B, H, W) -> (B, 1, H, W)
+        x = torch.unsqueeze(x, 1)
+
+        x = self.backbone(x)
+        return x
+
 
 
 def model_DM_time_binary_classificator_241002_1(resol, use_freq_time, device):
@@ -308,6 +339,10 @@ def model_DM_time_binary_classificator_241002_5_dropout(resol, use_freq_time, de
 def model_DM_time_binary_classificator_241002_6_dropout(resol, use_freq_time, device):
     return DMTimeBinaryClassificator241002_6_dropout(resol, use_freq_time, device)
 
+def model_DM_time_binary_classificator_resnet18(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet18(resol, use_freq_time, device)
+
+
 models_htable = {
     'DM_time_binary_classificator_241002_1': model_DM_time_binary_classificator_241002_1,
     'DM_time_binary_classificator_241002_2': model_DM_time_binary_classificator_241002_2,
@@ -315,6 +350,7 @@ models_htable = {
     'DM_time_binary_classificator_241002_3_dropout': model_DM_time_binary_classificator_241002_3_dropout,
     'DM_time_binary_classificator_241002_4_dropout': model_DM_time_binary_classificator_241002_4_dropout,
     'DM_time_binary_classificator_241002_5_dropout': model_DM_time_binary_classificator_241002_5_dropout,
-    'DM_time_binary_classificator_241002_6_dropout': model_DM_time_binary_classificator_241002_6_dropout
+    'DM_time_binary_classificator_241002_6_dropout': model_DM_time_binary_classificator_241002_6_dropout,
+    'DM_time_binary_classificator_resnet18': model_DM_time_binary_classificator_resnet18,
 }
 

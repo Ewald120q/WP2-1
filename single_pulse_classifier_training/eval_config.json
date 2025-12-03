@@ -1,0 +1,9 @@
+{
+  "filterbank_path": "data/filterbank_files/B0531+21_59000_48386.fil",
+  "transientx_time_series_path": "data/transientx/time_series/",
+  "transientx_candidates_path": "data/transientx/B0531+21_59000.4838657407_cfbf00000.cands",
+    "ntsamples": 256,
+  "dm_ranges": {
+    "pulses": [56, 58]
+  }
+}

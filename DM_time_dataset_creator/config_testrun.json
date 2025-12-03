@@ -1,7 +1,7 @@
 {
   "filterbank_path": "data/filterbank_files/B0531+21_59000_48386.fil",
-  "transientx_time_series_path": "/cephfs/users/oleksjuk/MA/runs/run4_thr3_256_ddm1/",
-  "transientx_candidates_path": "/cephfs/users/oleksjuk/MA/runs/run4_thr3_256_ddm1/run4_thr3_256_ddm1_59000.4838657407_cfbf00000.cands",
+  "transientx_time_series_path": "/cephfs/users/oleksjuk/MA/runs/run4_thr2_256_ddm1/",
+  "transientx_candidates_path": "/cephfs/users/oleksjuk/MA/runs/run4_thr2_256_ddm1/run4_thr2_256_ddm1_59000.4838657407_cfbf00000.cands",
     "ntsamples": 256,
   "dm_ranges": {
     "pulses": [56, 58]

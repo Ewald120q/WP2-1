@@ -1,15 +1,15 @@
 {
-    "path_to_files": "/raid/data",
+    "path_to_files": "/raid/data/run4_thr2",
     "path_to_checkpoints": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/checkpoints/",
     "path_to_images": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/images/",
     "tensorboard_log_dir": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs/",
     "tensorboard": {
         "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs/",
-        "experiment_name": "3layer-freq_time",
+        "experiment_name": "resnet18-dmt-thr2",
         "run_name": "adam_lr1e-4"
     },
     "resolution": 256,
-    "model_name": "DM_time_binary_classificator_241002_3dropout",
+    "model_name": "DM_time_binary_classificator_resnet18",
     "files_by_resolution": {
         "256": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch.npy",
         "default": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch_{res}x{res}.npy"
@@ -17,8 +17,8 @@
     "labels": "B0531+21_59000_48386_DM_time_dataset_realbased_labels.npy",
     "learning_rate": 0.0001,
     "weight_decay": 0.0001,
-    "num_epochs": 100,
-    "patience": 10,
+    "num_epochs": 15,
+    "patience": 5,
     "batch_size": 1024,
 
     "dataset_prefix": "B0531+21_59000_48386",

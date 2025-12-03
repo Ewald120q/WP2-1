@@ -8,6 +8,7 @@ from tqdm import tqdm
 import your
 from numba import jit
 import gc
+import math
 
 class DMTimeDataSetCreator:
     """
@@ -53,8 +54,10 @@ class DMTimeDataSetCreator:
 
         # Ensure output directory exists
         os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(self.dm_time_shard_dir, exist_ok=True)
-        os.makedirs(self.freq_time_shard_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.dm_time_shard_dir, "train"), exist_ok=True)
+        os.makedirs(os.path.join(self.dm_time_shard_dir, "test"), exist_ok=True)
+        os.makedirs(os.path.join(self.freq_time_shard_dir, "train"), exist_ok=True)
+        os.makedirs(os.path.join(self.freq_time_shard_dir, "test"), exist_ok=True)
 
         # Prepare file list and DMs
         self.file_list, self.dm_list = self._prepare_file_list_and_dm()
@@ -106,18 +109,18 @@ class DMTimeDataSetCreator:
 
         return dm_time_image
 
-    def _save_dm_time_shards(self, data):
+    def _save_dm_time_shards(self, data, name):
         """
         Persist the DM-Time dataset as ~20 GB shards under the dedicated output folder.
 
         Args:
-            data (np.ndarray): Array shaped (num_samples, n_dm, 256) with dtype uint8.
+            data (np.ndarray): Array shaped (N/nt_samples, nt_samples, n_dm, 256) with dtype uint8.
         """
         if data.size == 0:
             return
 
         if data.ndim != 3:
-            raise ValueError("Expected DM-Time data with shape (N, n_dm, 256)")
+            raise ValueError("Expected DM-Time data with shape (N*nt_samples, n_dm, 256)")
 
         bytes_per_sample = data.shape[1] * data.shape[2] * data.dtype.itemsize
         if bytes_per_sample == 0:
@@ -132,7 +135,7 @@ class DMTimeDataSetCreator:
         for start in range(0, total_samples, samples_per_shard):
             end = min(start + samples_per_shard, total_samples)
             shard_path = os.path.join(
-                self.dm_time_shard_dir,
+                self.dm_time_shard_dir, name,
                 f"{self.name_of_set}_DM_time_dataset_realbased_shard_{shard_idx:04d}.npy"
             )
             np.save(shard_path, data[start:end], allow_pickle=False)
@@ -158,7 +161,7 @@ class DMTimeDataSetCreator:
         }
 
         manifest_path = os.path.join(
-            self.dm_time_shard_dir,
+            self.dm_time_shard_dir, name,
             f"{self.name_of_set}_DM_time_dataset_manifest.json"
         )
         with open(manifest_path, 'w', encoding='utf-8') as manifest_file:
@@ -166,32 +169,23 @@ class DMTimeDataSetCreator:
 
         print(f"Saved {shard_idx} DM-time shard(s) to {self.dm_time_shard_dir}")
         print(f"DM-time shard manifest written to {manifest_path}")
-
+        
     @staticmethod
     def _shuffle_in_unison(arrays, seed=None):
-        """
-        Shuffle multiple numpy arrays consistently along their first axis.
-
-        Args:
-            arrays (list[np.ndarray]): Arrays to shuffle jointly.
-            seed (int, optional): Seed for deterministic shuffling.
-        """
         if not arrays:
             return
-
         length = arrays[0].shape[0]
+        if length < 2:
+            return
         for arr in arrays[1:]:
             if arr.shape[0] != length:
                 raise ValueError("All arrays must share the same length to shuffle together.")
-
         rng = np.random.default_rng(seed)
-        for i in range(length - 1, 0, -1):
-            j = rng.integers(0, i + 1)
-            if i == j:
-                continue
-            for arr in arrays:
-                arr[[i, j]] = arr[[j, i]]
-
+        permutation = rng.permutation(length)
+        for arr in arrays:
+            np.take(arr, permutation, axis=0, out=arr)
+            
+            
     def _get_position_in_filfile(self, mjd_pulse):
         """
         Calculate the position of a pulse in the filterbank file based on its MJD.
@@ -224,6 +218,7 @@ class DMTimeDataSetCreator:
         t_min = max(start_index, 0) * tsamp
         t_max = (max(start_index, 0) + width) * tsamp
         return t_min, t_max
+    
 
     def _process_candidates(self, candidates, label, exclude_positions=None, target_count=None):
         """
@@ -244,9 +239,13 @@ class DMTimeDataSetCreator:
                 raise ValueError("Target count must be specified for 'rest of events'")
     
             # Initialize dataset with the target count
-            dataset = np.empty([target_count, len(self.dm_list), 256], dtype=np.uint8)
-            metadata = np.empty((target_count, 4), dtype=np.float64) # SNR, t_min, t_max, DM per sample
-            global_index = 0
+            dataset = np.empty([math.floor(target_count/self.ntsamples),self.ntsamples, len(self.dm_list), 256], dtype=np.uint8)
+            metadata = np.empty((math.floor(target_count/self.ntsamples),self.ntsamples, 4), dtype=np.float64) # SNR, t_min, t_max, DM per sample
+            target_count = math.floor(target_count/self.ntsamples) * self.ntsamples
+            
+            global_index : int = 0 # make sure division is int
+            self.ntsamples = int(self.ntsamples)
+            
             
             # Use tqdm to display progress bar
             with tqdm(total=target_count, desc='Processing rest of events') as pbar:
@@ -255,23 +254,24 @@ class DMTimeDataSetCreator:
                     position = np.random.randint(0, self.dm_time_image.shape[1] - 256)
                     
                     # Check if position overlaps with pulses or artefacts
-                    if not self._is_in_pulse_or_bbrfi(position, exclude_positions):
+                    if not self._is_in_pulse_or_bbrfi(position, exclude_positions): #TODO try to add positions after processing to exclude_positions, so that noise segments are unique
                         slice_start = position
                         slice_end = slice_start + 256
                         t_min, t_max = self._sample_index_to_time_bounds(slice_start, slice_end - slice_start)
-                        dataset[global_index] = self.normalize_image_to_255(
+                        dataset[global_index // self.ntsamples, global_index % self.ntsamples] = self.normalize_image_to_255(
                             self.dm_time_image[:, slice_start:slice_end][::-1]
                         )
+                        #scan_snr = self._get_scansnr(self.dm_time_image[:, slice_start:slice_end][::-1])
                         dm = self._getDM(position)
-                        metadata[global_index] = (np.nan, t_min, t_max, dm)
+                        metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (np.nan, t_min, t_max, dm)
                         global_index += 1
                         pbar.update(1)  # Update progress bar
                 
             return dataset, metadata
         else:
             # Process pulses or zero DM events
-            dataset = np.empty([candidates.shape[0] * self.ntsamples, len(self.dm_list), 256], dtype=np.uint8)
-            metadata = np.empty((candidates.shape[0] * self.ntsamples, 4), dtype=np.float64)
+            dataset = np.empty([candidates.shape[0], self.ntsamples, len(self.dm_list), 256], dtype=np.uint8)
+            metadata = np.empty((candidates.shape[0], self.ntsamples, 4), dtype=np.float64)
             global_index = 0
     
             for idx, row in tqdm(candidates.iterrows(), total=candidates.shape[0], desc=f'Processing {label}'):
@@ -284,10 +284,10 @@ class DMTimeDataSetCreator:
                         slice_end = self.dm_time_image.shape[1]
                         slice_start = slice_end - 256
                     t_min, t_max = self._sample_index_to_time_bounds(slice_start, slice_end - slice_start)
-                    dataset[global_index] = self.normalize_image_to_255(
+                    dataset[global_index // self.ntsamples, global_index % self.ntsamples] = self.normalize_image_to_255(
                         self.dm_time_image[:, slice_start:slice_end][::-1]
                     )
-                    metadata[global_index] = (float(row['snr']), t_min, t_max, float(row['dm']))
+                    metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (float(row['snr']), t_min, t_max, float(row['dm']))
                     global_index += 1
     
             return dataset, metadata
@@ -336,7 +336,7 @@ class DMTimeDataSetCreator:
         return exclude_positions
 
 
-    def process(self, shuffle=True, shuffle_seed=None):
+    def process(self, train_ratio, shuffle=True, shuffle_seed=None):
         """
         Main function to process candidates and create the DM-Time dataset.
 
@@ -354,6 +354,8 @@ class DMTimeDataSetCreator:
             - Corresponding labels as a .npy file.
             - Metadata (snr, t_min, t_max, DM) as a .npy file.
         """
+        if train_ratio < 0 or train_ratio >1:
+            return ValueError("train_ratio is not between 0 and 1")
         # Load candidates
         column_names = ['beam_name', 'nn', 'mjd', 'dm', 'width', 'snr', 'fh', 'fl', 'image_name', 'x', 'name_file']
         candidats = pd.read_csv(self.transient_x_cands_path, sep='\t', names=column_names, dtype=str)
@@ -371,13 +373,13 @@ class DMTimeDataSetCreator:
         exclude_positions = self._generate_exclude_positions(pulse_candidates, zero_dm_events)
     
         # Process each category
-        dataset_with_pulses, metadata_pulses = self._process_candidates(pulse_candidates, 'pulses')
-        dataset_with_bbrfi, metadata_bbrfi = self._process_candidates(zero_dm_events, 'zero DM events')
+        dataset_with_pulses, metadata_pulses = self._process_candidates(pulse_candidates, 'pulses') #(N_pulses, nt_samples, len_DM_list = 256, 256)
+        dataset_with_bbrfi, metadata_bbrfi = self._process_candidates(zero_dm_events, 'zero DM events') #(N_bbrfi, nt_samples, len_DM_list = 256, 256)
         
-        target_count = dataset_with_pulses.shape[0] + dataset_with_bbrfi.shape[0]
+        target_count = dataset_with_pulses.shape[0] * dataset_with_pulses.shape[1] + dataset_with_bbrfi.shape[0] * dataset_with_bbrfi.shape[1]
 
         # Generate rest of events
-        dataset_with_rest, metadata_rest = self._process_candidates(
+        dataset_with_rest, metadata_rest = self._process_candidates( #(N_restofevents/nt_samples,nt_samples, len_DM_list = 256, 256) # N_restofevents = N_pulses + N_bbrfi >> 2 (ca. 2300 bei snr_thr = 3)
             rest, 
             'rest of events', 
             exclude_positions=exclude_positions, 
@@ -390,21 +392,54 @@ class DMTimeDataSetCreator:
         metadata = np.concatenate((metadata_pulses, metadata_bbrfi, metadata_rest), axis=0)
         print("combine labels")
         labels = np.array(
-            ['Pulse'] * len(dataset_with_pulses) +
-            ['Artefact'] * (len(dataset_with_bbrfi) + len(dataset_with_rest))
+            [['Pulse'] * self.ntsamples] * len(dataset_with_pulses) +
+            [['Artefact']* self.ntsamples] * (len(dataset_with_bbrfi) + len(dataset_with_rest))
         )
+        print(f"labels shape: {labels.shape}")
         if shuffle:
             print("Shuffling data, metadata, and labels before sharding ...")
             self._shuffle_in_unison([data, metadata, labels], seed=shuffle_seed)
+            print("Shuffling finished")
         else:
-            print("Warning: dataset is not shuffled before sharding. Pass shuffle=True to randomize order.")
+            print("Warning: dataset is not shuffled before sharding. Pass shuffle=True to randomize order of pulses.")
+            
+        #seperating into training and test,
+        # so that we can turn back data shape from (N, ntsamples, dm_length, 256) back to (N * ntsamples, dm_length, 256), which we need for sharding 
+        
+        data_len = len(data)
+        data_train = data[:math.floor(train_ratio * data_len)].reshape(-1, len(self.dm_list), 256)
+        data_test = data[math.floor(train_ratio * data_len):].reshape(-1, len(self.dm_list), 256)
+        metadata_train = metadata[:math.floor(train_ratio * data_len)].reshape(-1, 4)
+        metadata_test = metadata[math.floor(train_ratio * data_len):].reshape(-1, 4)
+        labels_train = labels[:math.floor(train_ratio * data_len)].reshape(-1)
+        labels_test = labels[math.floor(train_ratio * data_len):].reshape(-1)
+        
+        
+        if shuffle:
+            print("shuffling inside train and test before sharding, so that data more evenly distributed")
+            self._shuffle_in_unison([data_train, metadata_train, labels_train], seed=shuffle_seed)
+            self._shuffle_in_unison([data_test, metadata_test, labels_test], seed=shuffle_seed)
+        
+        print("data_train.shape: ", data_train.shape)
+        print("data_test.shape: ", data_test.shape)
+        print("metadata_train.shape: ", metadata_train.shape)
+        print("metadata_test.shape: ", metadata_test.shape)
+        print("labels_train.shape: ", labels_train.shape)
+        print("labels_test.shape: ", labels_test.shape)
+        
+        
         # Save DM-time dataset shards
-        self._save_dm_time_shards(data)
+        self._save_dm_time_shards(data_train, "train")
+        self._save_dm_time_shards(data_test, "test")
         del data
-        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels.npy'), labels)
-        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata.npy'), metadata)
+        del data_train
+        del data_test
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels_train.npy'), labels_train)
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata_train.npy'), metadata_train)
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels_test.npy'), labels_test)
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata_test.npy'), metadata_test)
 
-    def report_snr_statistics(self, metadata_path=None, labels_path=None, snr_round=2):
+    def report_snr_statistics(self, metadata_path=None, labels_path=None, snr_round=2, ratio = None, test = None):
         """
         Load saved labels and metadata arrays and print SNR-related statistics.
 
@@ -426,11 +461,27 @@ class DMTimeDataSetCreator:
 
         if not os.path.exists(metadata_path):
             raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
+        else:
+            print(f"using {metadata_path}")
         if not os.path.exists(labels_path):
             raise FileNotFoundError(f"Labels file not found at {labels_path}")
+        else:
+            print(f"using {labels_path}")
 
         metadata = np.load(metadata_path)
         labels = np.load(labels_path)
+    
+        
+        if ratio is not None and test is not None and ratio > 0.0 and ratio < 1.0:
+            length = len(metadata)
+            if test:
+                metadata = metadata[math.floor(length*ratio):]
+                labels = labels[math.floor(length*ratio):]
+            else:
+                metadata = metadata[:math.floor(length*ratio)]
+                labels = labels[:math.floor(length*ratio)]
+        
+        print(metadata.shape)
 
         if metadata.ndim != 2 or metadata.shape[1] < 4:
             raise ValueError(
@@ -525,13 +576,13 @@ class DMTimeDataSetCreator:
             print("No pulsar entries with finite SNR found.")
             
                 
-    def get_dedispersed_freq_time(self, metadata_path=None, patch_width=256, use_memmap=True):
+    def get_dedispersed_freq_time(self, name, metadata_path=None, patch_width=256, use_memmap=True):
         """
         Create dedispersed freq-time data and save it in ~20 GB shards.
 
         Each shard is stored as a separate `.npy` file under the
         `dedispersed_freq_time_shards/` directory with shape
-        `(num_samples_in_shard, nchans, patch_width)` and dtype `float16`.
+        `(num_samples_in_shard, nchans, patch_width)` and dtype `uint8`.
         The `use_memmap` flag is retained for compatibility but shards are always
         written through memory-mapped arrays to limit RAM usage.
         """
@@ -544,7 +595,7 @@ class DMTimeDataSetCreator:
         if metadata_path is None:
             metadata_path = os.path.join(
                 self.output_dir,
-                f'{self.name_of_set}_DM_time_dataset_realbased_metadata.npy'
+                f'{self.name_of_set}_DM_time_dataset_realbased_metadata_{name}.npy'
             )
 
         if not os.path.exists(metadata_path):
@@ -580,7 +631,7 @@ class DMTimeDataSetCreator:
             print("No metadata entries found; skipping dedispersed freq-time export.")
             return
 
-        bytes_per_sample = nchans * patch_width * np.dtype(np.float16).itemsize
+        bytes_per_sample = nchans * patch_width * np.dtype(np.uint8).itemsize
         samples_per_shard = max(1, self.max_shard_size_bytes // bytes_per_sample)
 
         shard_idx = 0
@@ -594,13 +645,13 @@ class DMTimeDataSetCreator:
                 shard_size = shard_end - shard_start
 
                 shard_path = os.path.join(
-                    self.freq_time_shard_dir,
+                    self.freq_time_shard_dir,name,
                     f"{self.name_of_set}_dedispersed_freq_time_shard_{shard_idx:04d}.npy"
                 )
                 shard_memmap = np.lib.format.open_memmap(
                     shard_path,
                     mode='w+',
-                    dtype=np.float16,
+                    dtype=np.uint8,
                     shape=(shard_size, nchans, patch_width)
                 )
 
@@ -619,7 +670,7 @@ class DMTimeDataSetCreator:
                         start = max(0, total_samples - patch_width)
 
                     if not np.isfinite(dm) or dm == 0.0:
-                        shard_memmap[local_idx] = self.filterbank_file.get_data(start, patch_width).astype(np.float16).T
+                        shard_memmap[local_idx] = self.filterbank_file.get_data(start, patch_width).astype(np.uint8).T
                         if local_idx % 256 == 0:
                             gc.collect()
                         pbar.update(1)
@@ -636,10 +687,11 @@ class DMTimeDataSetCreator:
                             pass
 
                     block = self.filterbank_file.get_data(start, n_read).T
-                    dedisp_patch = self._dedisperse_patch(block, dm)[:, :patch_width].astype(np.float16)
+                    dedisp_patch = self._dedisperse_patch(block, dm)[:, :patch_width]
+                    dedisp_patch = self.normalize_image_to_255(dedisp_patch)
 
                     if dedisp_patch.shape[1] < patch_width:
-                        tmp = np.zeros((nchans, patch_width), dtype=np.float16)
+                        tmp = np.zeros((nchans, patch_width), dtype=np.uint8) #alternativ float16
                         tmp[:, :dedisp_patch.shape[1]] = dedisp_patch
                         dedisp_patch = tmp
 
@@ -673,7 +725,7 @@ class DMTimeDataSetCreator:
         manifest = {
             "dataset": "dedispersed_freq_time",
             "name": self.name_of_set,
-            "dtype": "float16",
+            "dtype": "uint8",
             "patch_width": int(patch_width),
             "nchans": int(nchans),
             "total_samples": int(n_samples),
@@ -681,13 +733,13 @@ class DMTimeDataSetCreator:
             "shards": shard_infos,
         }
         manifest_path = os.path.join(
-            self.freq_time_shard_dir,
+            self.freq_time_shard_dir,name,
             f"{self.name_of_set}_dedispersed_freq_time_manifest.json"
         )
         with open(manifest_path, 'w', encoding='utf-8') as manifest_file:
             json.dump(manifest, manifest_file, indent=2)
 
-        print(f"Saved {shard_idx} dedispersed shard(s) to {self.freq_time_shard_dir}")
+        print(f"Saved {shard_idx} dedispersed shard(s) to {self.freq_time_shard_dir}/{name}")
         print(f"Dedispersed shard manifest written to {manifest_path}")
 
 

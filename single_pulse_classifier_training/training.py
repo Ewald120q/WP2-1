@@ -4,15 +4,14 @@ import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
-from sklearn.model_selection import StratifiedShuffleSplit
 import numpy as np
 import matplotlib.pyplot as plt
 from training_models import models_htable
 from tqdm import tqdm
-import math
 from datetime import datetime
+import math
 
 from DMTimeShardDataset import *
 
@@ -127,33 +126,52 @@ def train(config):
     writer.add_text("run/name", run_component, 0)
     
     dataset_cfg = {
-    "output_dir": config["path_to_files"],
-    "prefix": config["dataset_prefix"],  # e.g. basename of the filterbank
+        "output_dir": config["path_to_files"],
+        "prefix": config["dataset_prefix"],  # e.g. basename of the filterbank
     }
 
-    
-    full_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=True)
-    labels_numeric = label_encoding(full_dataset.labels.astype(object))  # only once if needed
-    
-    full_dataset.labels = labels_numeric
+    full_train_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=use_freq_time, split="train")
+    full_train_dataset.labels = label_encoding(full_train_dataset.labels.astype(object))
 
-    #data is already shuffled inside shards
-    indices = np.arange(len(full_dataset))
-    train_idx = indices[:math.floor(len(indices)*0.7)]
-    val_idx = indices[math.floor(len(indices)*0.7):]
+    val_fraction = config.get("val_fraction", 0.105)
+    if not 0 < val_fraction < 1:
+        raise ValueError("'val_fraction' must be between 0 and 1.")
 
-    train_sampler = torch.utils.data.SubsetRandomSampler(train_idx)
-    val_sampler = torch.utils.data.SubsetRandomSampler(val_idx)
+    num_train_samples = len(full_train_dataset)
+    if num_train_samples < 2:
+        raise ValueError("Need at least 2 training samples to create a validation split.")
 
-    train_loader = DataLoader(full_dataset, batch_size=config["batch_size"],
-                            sampler=train_sampler, num_workers=config.get("num_workers", 8))
-    val_loader = DataLoader(full_dataset, batch_size=config["batch_size"],
-                            sampler=val_sampler, num_workers=config.get("num_workers", 8))
+    split_idx_val = math.floor(num_train_samples * (1 - val_fraction))
+    split_idx_val = min(max(split_idx_val, 1), num_train_samples - 1)
 
+    train_indices = range(0, split_idx_val)
+    val_indices = range(split_idx_val, num_train_samples)
 
-    print("Train Loader length: ",len(train_loader))
-    print("Val Loader length: ",len(val_loader))
-    print("full dataset length: ", len(full_dataset))
+    train_dataset = Subset(full_train_dataset, train_indices)
+    val_dataset = Subset(full_train_dataset, val_indices)
+
+    test_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=use_freq_time, split="test")
+    test_dataset.labels = label_encoding(test_dataset.labels.astype(object))
+
+    train_loader = DataLoader(train_dataset,
+                              batch_size=config["batch_size"],
+                              shuffle=False,
+                              num_workers=config.get("num_workers", 8))
+    val_loader = DataLoader(val_dataset,
+                              batch_size=config["batch_size"],
+                              shuffle=False,
+                              num_workers=config.get("num_workers", 8))
+    test_loader = DataLoader(test_dataset,
+                            batch_size=config["batch_size"],
+                            shuffle=False,
+                            num_workers=config.get("num_workers", 8))
+
+    print("Train Loader length: ", len(train_loader))
+    print("Val Loader length: ", len(val_loader))
+    print("Test Loader length: ", len(test_loader))
+    print("train dataset length: ", len(train_dataset))
+    print("val dataset length: ", len(val_dataset))
+    print("test dataset length: ", len(test_dataset))
 
     # Initialize the model
     model = models_htable[model_name](resolution, use_freq_time, device).to(device)
@@ -169,6 +187,8 @@ def train(config):
     train_accuracies = []
     val_losses = []
     val_accuracies = []
+    test_losses = []
+    test_accuracies = []
     best_val_acc = 0.0
     best_epoch = 0
     patience_counter = 0
@@ -218,10 +238,31 @@ def train(config):
         val_loss = val_running_loss / len(val_loader)
         val_acc = correct_val / total_val
         
-        scheduler.step(val_loss)
+        
+        # Test phase
+        model.eval()
+        test_running_loss = 0.0
+        correct_test = 0
+        total_test = 0
+        
+        with torch.no_grad():
+            for batch in test_loader:
+                #inputs = torch.unsqueeze(inputs, 1)
+                labels = batch["label"].to(device)
+                outputs = model(batch)
+                loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
+                
+                test_running_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                total_test += labels.size(0)
+                correct_test += (predicted == labels).sum().item()
+        test_loss = test_running_loss / len(test_loader)
+        test_acc = correct_test / total_test
+        
+        scheduler.step(test_loss)
 
-        writer.add_scalars('Loss', {'train': train_loss, 'val': val_loss}, epoch + 1)
-        writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch + 1)
+        writer.add_scalars('Loss', {'train': train_loss, 'val': val_loss, 'test': test_loss}, epoch + 1)
+        writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc, 'test': test_acc}, epoch + 1)
         writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch + 1)
         
         # Store metrics
@@ -229,10 +270,13 @@ def train(config):
         train_accuracies.append(train_acc)
         val_losses.append(val_loss)
         val_accuracies.append(val_acc)
+        test_losses.append(test_loss)
+        test_accuracies.append(test_acc)
         
         print(f'Epoch [{epoch+1}/{config["num_epochs"]}], '
               f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, '
-              f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}')
+              f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f},'
+              f'Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}')
         
         # Save checkpoint if validation accuracy improved
         if val_acc > best_val_acc:
@@ -252,10 +296,13 @@ def train(config):
 
     # Create history-like object for plotting
     history = {
-        'loss': train_losses,
-        'accuracy': train_accuracies,
+        'train_loss': train_losses,
+        'train_accuracy': train_accuracies,
         'val_loss': val_losses,
-        'val_accuracy': val_accuracies
+        'val_accuracy': val_accuracies,
+        'test_loss': test_losses,
+        'test_accuracy': test_accuracies,
+        
     }
 
     # Plot training and validation loss and accuracy
@@ -264,23 +311,25 @@ def train(config):
 
     # Loss plot
     plt.subplot(1, 2, 1)
-    plt.plot(history['loss'])
+    plt.plot(history['train_loss'])
     plt.plot(history['val_loss'])
+    plt.plot(history['test_loss'])
     plt.title(f'Model Loss: {resolution}x{resolution}')
     plt.ylabel('Loss')
     plt.xlabel('Epoch')
     plt.grid(True, ls='--')
-    plt.legend(['Train', 'Validation'], loc='upper right')
+    plt.legend(['Train', 'Validation', 'Test'], loc='upper right')
 
     # Accuracy plot
     plt.subplot(1, 2, 2)
     plt.plot(history['accuracy'])
     plt.plot(history['val_accuracy'])
+    plt.plot(history['test_accuracy'])
     plt.title(f'Model Accuracy: {resolution}x{resolution}')
     plt.ylabel('Accuracy')
     plt.xlabel('Epoch')
     plt.grid(True, ls='--')
-    plt.legend(['Train', 'Validation'], loc='lower right')
+    plt.legend(['Train', 'Validation', 'Test'], loc='lower right')
 
     # Add a common title
     plt.suptitle(f'Model {model_name} performance for {resolution}x{resolution} resolution', fontsize=16)
@@ -293,14 +342,14 @@ def train(config):
     )
     plt.close(fig)
 
-    # Evaluate the model on the validation set
+    # Evaluate the model on the test set
     model.eval()
     with torch.no_grad():
         correct = 0
         total = 0
         wrong_examples = []
         wrong_labels = []
-        for batch in val_loader:
+        for batch in test_loader:
             labels = batch["label"].to(device)
             metadata = batch["metadata"].to(device)
             outputs = model(batch)

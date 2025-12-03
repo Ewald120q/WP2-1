@@ -14,4 +14,8 @@
 ./testrun3
 single_pulse_classifier_training/checkpoints/*
 single_pulse_classifier_training/data/*
+single_pulse_classifier_training/images/*
 single_pulse_classifier_training/tensorboard_runs
+single_pulse_classifier_training/tensorboard_runs_grid
+single_pulse_classifier_training/broken_tensorboard_runs
+DM_time_dataset_creator/outputs/*
