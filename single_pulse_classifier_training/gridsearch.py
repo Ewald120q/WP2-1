@@ -3,12 +3,12 @@ import itertools
 import copy
 
 _config = {
-    "path_to_files": "/raid/data/run4_thr2",
+    "path_to_files": "/cephfs/users/oleksjuk/MA/WP2-1/DM_time_dataset_creator/outputs",
     "path_to_checkpoints": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/checkpoints/",
     "path_to_images": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/images/",
     "tensorboard_log_dir": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs/",
     "tensorboard": {
-        "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid/",
+        "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid_08_01_01/",
         "experiment_name": "3layer-freq_time", #!
         "run_name": "adam_lr1e-4" #!
     },
@@ -29,7 +29,7 @@ _config = {
     "use_freq_time": False # !
 }
 
-models = ["DM_time_binary_classificator_241002_3_dropout","DM_time_binary_classificator_241002_4_dropout","DM_time_binary_classificator_241002_5_dropout""DM_time_binary_classificator_241002_6_dropout"]
+models = ['DM_time_binary_classificator_241002_3_dropout','DM_time_binary_classificator_241002_4_dropout','DM_time_binary_classificator_241002_5_dropout','DM_time_binary_classificator_241002_6_dropout']
 lrs = [1e-3, 1e-4, 1e-5]
 weight_decays = [1e-4]
 freq_times = [True]

@@ -133,7 +133,7 @@ def train(config):
     full_train_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=use_freq_time, split="train")
     full_train_dataset.labels = label_encoding(full_train_dataset.labels.astype(object))
 
-    val_fraction = config.get("val_fraction", 0.105)
+    val_fraction = config.get("val_fraction", 0.1111)
     if not 0 < val_fraction < 1:
         raise ValueError("'val_fraction' must be between 0 and 1.")
 
@@ -322,7 +322,7 @@ def train(config):
 
     # Accuracy plot
     plt.subplot(1, 2, 2)
-    plt.plot(history['accuracy'])
+    plt.plot(history['train_accuracy'])
     plt.plot(history['val_accuracy'])
     plt.plot(history['test_accuracy'])
     plt.title(f'Model Accuracy: {resolution}x{resolution}')
