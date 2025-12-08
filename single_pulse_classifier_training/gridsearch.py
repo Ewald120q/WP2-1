@@ -29,8 +29,8 @@ _config = {
     "use_freq_time": False # !
 }
 
-models = ['DM_time_binary_classificator_241002_3_dropout','DM_time_binary_classificator_241002_4_dropout','DM_time_binary_classificator_241002_5_dropout','DM_time_binary_classificator_241002_6_dropout']
-lrs = [1e-3, 1e-4, 1e-5]
+models = ['DM_time_binary_classificator_resnet18_dropout']
+lrs = [1e-2]
 weight_decays = [1e-4]
 freq_times = [True]
 

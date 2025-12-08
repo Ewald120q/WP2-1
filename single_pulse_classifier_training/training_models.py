@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ResNet import ResNet, BasicBlock
+from ResNet import ResNet, BasicBlock, Bottleneck, ResNet_dropout
 
 
 class DMTimeBinaryClassificator241002_1(nn.Module):
@@ -317,6 +317,170 @@ class DMTimeBinaryClassificatorResNet18(nn.Module):
         return x
 
 
+class DMTimeBinaryClassificatorResNet50(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet50, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+
+        if resol != 256:
+            raise ValueError(f"ResNet50-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet50: Bottleneck + [3,4,6,3]
+        self.backbone = ResNet(
+            block=Bottleneck,
+            layers=[3, 4, 6, 3],
+            num_classes=2,
+            in_channels=1,
+        )
+
+    def forward(self, x):
+        if self.use_freq_time:
+            x = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+
+        # (B, H, W) -> (B, 1, H, W)
+        x = torch.unsqueeze(x, 1)
+
+        x = self.backbone(x)
+        return x
+
+
+class DMTimeBinaryClassificatorResNet50_dropout(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet50_dropout, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+
+        if resol != 256:
+            raise ValueError(f"ResNet50-Dropout-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet50: Bottleneck + [3,4,6,3]
+        self.backbone = ResNet_dropout(
+            block=Bottleneck,
+            layers=[3, 4, 6, 3],
+            num_classes=2,
+            in_channels=1,
+        )
+
+    def forward(self, x):
+        if self.use_freq_time:
+            x = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+
+        # (B, H, W) -> (B, 1, H, W)
+        x = torch.unsqueeze(x, 1)
+
+        x = self.backbone(x)
+        return x
+
+
+class DMTimeBinaryClassificatorResNet50_dropout_dmft(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet50_dropout_dmft, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+
+        if resol != 256:
+            raise ValueError(f"ResNet50-Dropout-dmft-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet50: Bottleneck + [3,4,6,3] mit zwei Eingabekanälen
+        self.backbone = ResNet_dropout(
+            block=Bottleneck,
+            layers=[3, 4, 6, 3],
+            num_classes=2,
+            in_channels=2,
+        )
+
+    def forward(self, x):
+        x_ft = x["freq_time"].to(self.device)
+        x_dmt = x["dm_time"].to(self.device)
+
+        x_ft = torch.unsqueeze(x_ft, 1)
+        x_dmt = torch.unsqueeze(x_dmt, 1)
+
+        x = torch.cat((x_ft, x_dmt), dim=1)
+
+        x = self.backbone(x)
+        return x
+
+
+class DMTimeBinaryClassificatorResNet18_dropout(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet18_dropout, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+        
+        if resol != 256:
+            raise ValueError(f"ResNet18-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet18: BasicBlock + [2,2,2,2]
+        self.backbone = ResNet_dropout(
+            block=BasicBlock,
+            layers=[2, 2, 2, 2],
+            num_classes=2,
+            in_channels=1,
+        )
+
+    def forward(self, x):
+        if self.use_freq_time:
+            x = x["freq_time"].to(self.device)
+        else:
+            x = x["dm_time"].to(self.device)
+
+        # (B, H, W) -> (B, 1, H, W)
+        x = torch.unsqueeze(x, 1)
+
+        x = self.backbone(x)
+        return x
+    
+class DMTimeBinaryClassificatorResNet18_dropout_dmft(nn.Module):
+    def __init__(self, resol, use_freq_time, device):
+        super(DMTimeBinaryClassificatorResNet18_dropout_dmft, self).__init__()
+        self.resol = resol
+        self.use_freq_time = use_freq_time
+        self.device = device
+        
+        if resol != 256:
+            raise ValueError(f"ResNet18-Wrapper aktuell nur für resol=256 implementiert, bekommen: {resol}")
+
+        # ResNet18: BasicBlock + [2,2,2,2]
+        self.backbone = ResNet_dropout(
+            block=BasicBlock,
+            layers=[2, 2, 2, 2],
+            num_classes=2,
+            in_channels=2,
+        )
+
+    def forward(self, x):
+        #if self.use_freq_time:
+        #    x = x["freq_time"].to(self.device)
+        #else:
+        #    x = x["dm_time"].to(self.device)
+        
+        x_ft = x["freq_time"].to(self.device)
+        x_dmt = x["dm_time"].to(self.device)
+        
+        x_ft = torch.unsqueeze(x_ft, 1)
+        x_dmt = torch.unsqueeze(x_dmt, 1)
+        
+        x = torch.cat((x_ft,x_dmt), dim = 1)
+
+        # (B, H, W) -> (B, 2, H, W)
+        #x = torch.unsqueeze(x, 1)
+
+        x = self.backbone(x)
+        return x
+
+
+
+
 
 def model_DM_time_binary_classificator_241002_1(resol, use_freq_time, device):
     return DMTimeBinaryClassificator241002_1(resol, use_freq_time,device)
@@ -342,6 +506,21 @@ def model_DM_time_binary_classificator_241002_6_dropout(resol, use_freq_time, de
 def model_DM_time_binary_classificator_resnet18(resol, use_freq_time, device):
     return DMTimeBinaryClassificatorResNet18(resol, use_freq_time, device)
 
+def model_DM_time_binary_classificator_resnet18_dropout(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet18_dropout(resol, use_freq_time, device)
+
+def model_DM_time_binary_classificator_resnet18_dropout_dmft(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet18_dropout_dmft(resol, use_freq_time, device)
+
+def model_DM_time_binary_classificator_resnet50(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet50(resol, use_freq_time, device)
+
+def model_DM_time_binary_classificator_resnet50_dropout(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet50_dropout(resol, use_freq_time, device)
+
+def model_DM_time_binary_classificator_resnet50_dropout_dmft(resol, use_freq_time, device):
+    return DMTimeBinaryClassificatorResNet50_dropout_dmft(resol, use_freq_time, device)
+
 
 models_htable = {
     'DM_time_binary_classificator_241002_1': model_DM_time_binary_classificator_241002_1,
@@ -352,5 +531,10 @@ models_htable = {
     'DM_time_binary_classificator_241002_5_dropout': model_DM_time_binary_classificator_241002_5_dropout,
     'DM_time_binary_classificator_241002_6_dropout': model_DM_time_binary_classificator_241002_6_dropout,
     'DM_time_binary_classificator_resnet18': model_DM_time_binary_classificator_resnet18,
+    'DM_time_binary_classificator_resnet18_dropout': model_DM_time_binary_classificator_resnet18_dropout,
+    'DM_time_binary_classificator_resnet18_dropout_dmft': model_DM_time_binary_classificator_resnet18_dropout_dmft,
+    'DM_time_binary_classificator_resnet50': model_DM_time_binary_classificator_resnet50,
+    'DM_time_binary_classificator_resnet50_dropout': model_DM_time_binary_classificator_resnet50_dropout,
+    'DM_time_binary_classificator_resnet50_dropout_dmft': model_DM_time_binary_classificator_resnet50_dropout_dmft,
 }
 
