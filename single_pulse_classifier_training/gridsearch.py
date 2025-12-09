@@ -26,26 +26,29 @@ _config = {
     "batch_size": 1024,
 
     "dataset_prefix": "B0531+21_59000_48386",
-    "use_freq_time": False # !
+    "mode": "dmt", # !
+    "dropout": True #!
 }
 
-models = ['DM_time_binary_classificator_resnet18_dropout']
+models = ['DM_time_binary_classificator_resnet18']
 lrs = [1e-2]
 weight_decays = [1e-4]
-freq_times = [True]
+modes = ["dmt", "ft", "dmft"]
+dropouts = [True, False]
 
 if __name__ == "__main__":
-    for model, lr, wd, ft in itertools.product(models, lrs, weight_decays, freq_times):
+    for model, lr, wd, mode, dropout in itertools.product(models, lrs, weight_decays, modes, dropouts):
         config = copy.deepcopy(_config)
-        print(f"Config: model:{model}, lr:{lr}, wd:{wd}, ft:{ft}")
+        print(f"Config: model:{model}, lr:{lr}, wd:{wd}, mode:{mode}")
         
         config["model_name"] = model
         config["learning_rate"] = lr
         config["weight_decay"] = wd
-        config["use_freq_time"] = ft
+        config["mode"] = mode
+        config["dropout"] = dropout
         
         tb_cfg = config.setdefault("tensorboard", {})
-        tb_cfg["experiment_name"] = f"{model}-{'ft' if ft else 'dmt'}"
+        tb_cfg["experiment_name"] = f"{model}_{"dropout" if dropout else ""}-{mode}"
         tb_cfg["run_name"] = f"lr{lr}_wd{wd}"
 
         train(config)

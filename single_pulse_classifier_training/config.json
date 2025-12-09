@@ -5,11 +5,11 @@
     "tensorboard_log_dir": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid_08_01_01/",
     "tensorboard": {
         "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid_08_01_01/",
-        "experiment_name": "DM_time_binary_classificator_resnet18_dropout-dmft-explr095",
+        "experiment_name": "DM_time_binary_classificator_241002_1_dropout_dmt_testrun",
         "run_name": "lr0.01_wd0.0001"
     },
     "resolution": 256,
-    "model_name": "DM_time_binary_classificator_resnet18_dropout_dmft",
+    "model_name": "DM_time_binary_classificator_241002_1",
     "files_by_resolution": {
         "256": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch.npy",
         "default": "B0531+21_59000_48386_DM_time_dataset_realbased_training_pytorch_{res}x{res}.npy"
@@ -17,10 +17,11 @@
     "labels": "B0531+21_59000_48386_DM_time_dataset_realbased_labels.npy",
     "learning_rate": 0.01,
     "weight_decay": 0.0001,
-    "num_epochs": 15,
+    "num_epochs": 1,
     "patience": 5,
     "batch_size": 512,
 
     "dataset_prefix": "B0531+21_59000_48386",
-    "use_freq_time": true
+    "mode": "dmt",
+    "dropout": true
 }
