@@ -125,8 +125,19 @@ class ResNet(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
+    
+    def forward_mid_level_features(self, x):
+        # Input: (B, C, H, W)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
 
-    def forward(self, x):
+        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
+        x = self.layer2(x)  # 1/8
+        return x
+
+    def forward_features(self, x):
         # Input: (B, C, H, W)
         x = self.conv1(x)
         x = self.bn1(x)
@@ -140,6 +151,10 @@ class ResNet(nn.Module):
 
         x = self.maxpool2(x)           # -> (B, 512, 1, 1)
         x = torch.flatten(x, 1)       # -> (B, 512)
+        return x
+    
+    def forward(self, x):
+        x = self.forward_features(x)
         x = self.fc(x)                # -> (B, num_classes)
         return x
 
@@ -194,8 +209,8 @@ class ResNet_dropout(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
-
-    def forward(self, x):
+    
+    def forward_mid_level_features(self, x):
         # Input: (B, C, H, W)
         x = self.conv1(x)
         x = self.bn1(x)
@@ -206,6 +221,19 @@ class ResNet_dropout(nn.Module):
 
         x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
         x = self.layer2(x)  # 1/8
+        return x
+
+    def forward_features(self, x):
+        # Input: (B, C, H, W)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        x = self.dropout_conv(x)
+        
+        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
+        x = self.layer2(x)  # 1/8
         x = self.layer3(x)  # 1/16
         x = self.layer4(x)  # 1/32
 
@@ -213,5 +241,9 @@ class ResNet_dropout(nn.Module):
         #x = self.maxpool2(x)
         x = torch.flatten(x, 1)       # -> (B, 512)
         x = self.dropout_fc(x)
-        x = self.fc(x)                # -> (B, num_classes)
+        return x
+    
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.fc(x)              # -> (B, num_classes)
         return x

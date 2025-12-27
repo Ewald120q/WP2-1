@@ -8,18 +8,19 @@ from torch.utils.data import DataLoader, TensorDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import matplotlib.pyplot as plt
-from training_models import models_htable
+from training_models import models_htable, LateFusionCombinedDMFTModel, MidFusionCombinedDMFTModel
 from tqdm import tqdm
 from datetime import datetime
 import math
+import warnings
 from training_utils import _slugify_component, save_checkpoint, label_encoding,load_config, plot_accuracies
 
 from DMTimeShardDataset import *
 
 
-def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
+def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_epochs,
            *, val_dataloader=None, criterion=None, scheduler=None, writer=None,
-           device=None, patience=None, checkpoint_dir=None):
+           device=None, patience=None, checkpoint_dir=None, targets_train=None, targets_test=None):
     device = device or next(model.parameters()).device
     criterion = criterion or nn.CrossEntropyLoss()
     patience = patience if patience is not None else num_epochs
@@ -30,9 +31,16 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
     val_accuracies = []
     test_losses = []
     test_accuracies = []
-    best_test_acc = 0.0
+    best_val_acc = 0.0
     best_epoch = 0
     patience_counter = 0
+
+    train_targets_tensor = None
+    test_targets_tensor = None
+    if targets_train is not None:
+        train_targets_tensor = torch.as_tensor(targets_train, dtype=torch.long, device=device)
+    if targets_test is not None:
+        test_targets_tensor = torch.as_tensor(targets_test, dtype=torch.long, device=device)
 
     for epoch in range(num_epochs):
         model.train()
@@ -40,8 +48,14 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
         correct_train = 0
         total_train = 0
 
-        for _, batch in tqdm(enumerate(train_dataloader)):
-            labels = batch["label"].to(device)
+        train_offset = 0
+        for batch in tqdm(train_dataloader):
+            if train_targets_tensor is not None:
+                batch_size = batch["label"].shape[0]
+                labels = train_targets_tensor[train_offset:train_offset + batch_size]
+                train_offset += batch_size
+            else:
+                labels = batch["label"].to(device)
             optimizer.zero_grad()
             outputs = model(batch)
             loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
@@ -64,8 +78,14 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
             correct_val = 0
             total_val = 0
             with torch.no_grad():
+                val_offset = 0
                 for batch in val_dataloader:
-                    labels = batch["label"].to(device)
+                    if test_targets_tensor is not None:
+                        batch_size = batch["label"].shape[0]
+                        labels = test_targets_tensor[val_offset:val_offset + batch_size]
+                        val_offset += batch_size
+                    else:
+                        labels = batch["label"].to(device)
                     outputs = model(batch)
                     loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
 
@@ -83,8 +103,14 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
             correct_test = 0
             total_test = 0
             with torch.no_grad():
+                test_offset = 0
                 for batch in test_dataloader:
-                    labels = batch["label"].to(device)
+                    if test_targets_tensor is not None:
+                        batch_size = batch["label"].shape[0]
+                        labels = test_targets_tensor[test_offset:test_offset + batch_size]
+                        test_offset += batch_size
+                    else:
+                        labels = batch["label"].to(device)
                     outputs = model(batch)
                     loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
 
@@ -95,7 +121,8 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
             test_loss = test_running_loss / max(len(test_dataloader), 1)
             test_acc = correct_test / max(total_test, 1)
 
-        scheduler.step(test_loss)
+        #scheduler.step(test_loss)
+        #scheduler.step(train_loss)
 
         loss_dict = {'train': train_loss}
         if val_loss is not None:
@@ -124,14 +151,14 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
               (f', Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}' if val_loss is not None else '') +
               (f', Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}' if test_loss is not None else ''))
         
-        if test_acc > best_test_acc:
-            best_test_acc = test_acc
+        if test_acc > best_val_acc:
+            best_val_acc = test_acc
             best_epoch = epoch + 1
             patience_counter = 0
-            save_checkpoint(model, optimizer, epoch + 1, train_acc, val_acc, checkpoint_dir)
-            print(f'New best validation accuracy: {val_acc:.4f} - Model saved!')
+            save_checkpoint(model, model_name, optimizer, epoch + 1, train_acc, test_acc, checkpoint_dir)
+            print(f'New best validation accuracy: {test_acc:.4f} - Model saved!')
             if writer is not None:
-                writer.add_scalar('Accuracy/best_test', best_test_acc, epoch + 1)
+                writer.add_scalar('Accuracy/best_test', best_val_acc, epoch + 1)
         else:
             patience_counter += 1
             if patience is not None and patience_counter >= patience:
@@ -148,8 +175,14 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
         correct = 0
         total = 0
         with torch.no_grad():
+            analyze_offset = 0
             for batch in test_dataloader:
-                labels = batch["label"].to(device)
+                if test_targets_tensor is not None:
+                    batch_size = batch["label"].shape[0]
+                    labels = test_targets_tensor[analyze_offset:analyze_offset + batch_size]
+                    analyze_offset += batch_size
+                else:
+                    labels = batch["label"].to(device)
                 metadata = batch.get("metadata")
                 outputs = model(batch)
                 _, predicted = torch.max(outputs, 1)
@@ -177,7 +210,77 @@ def _train(model, train_dataloader, test_dataloader, optimizer, num_epochs,
         'test_accuracy': test_accuracies,
     }
 
-    return history, best_test_acc, best_epoch, final_test_acc, wrong_examples, wrong_labels
+    return history, best_val_acc, best_epoch, final_test_acc, wrong_examples, wrong_labels
+
+
+def _load_pretrained_model(model_key, checkpoint_path, *, resolution, mode, dropout, device):
+    if model_key not in models_htable:
+        raise KeyError(f"Unknown model '{model_key}' requested for late fusion.")
+
+    if not checkpoint_path or not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint for '{model_key}' not found at '{checkpoint_path}'.")
+
+    model = models_htable[model_key](resolution, mode, dropout, device).to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        warnings.warn(f"Missing keys while loading '{model_key}': {missing}")
+    if unexpected:
+        warnings.warn(f"Unexpected keys while loading '{model_key}': {unexpected}")
+    model.eval()
+    return model
+
+
+def _build_fusion_model(config, device, resolution):
+    model_dmt_name = config.get("model_dmt")
+    model_ft_name = config.get("model_ft")
+    model_name = config["model_name"]
+    if not model_dmt_name or not model_ft_name:
+        raise ValueError("Late fusion requires 'model_dmt' and 'model_ft' entries in the config.")
+
+    dmt_model = _load_pretrained_model(
+        model_dmt_name,
+        config.get("model_dmt_path"),
+        resolution=resolution,
+        mode="dmt",
+        dropout=config.get("model_dmt_dropout", False),
+        device=device,
+    )
+
+    ft_model = _load_pretrained_model(
+        model_ft_name,
+        config.get("model_ft_path"),
+        resolution=resolution,
+        mode="ft",
+        dropout=config.get("model_ft_dropout", False),
+        device=device,
+    )
+
+    k = config.get("k")
+
+    freeze_towers = config.get("freeze_towers", True)
+
+    if model_name == "LateFusionCombinedDMFTModel":
+        fusion_model = LateFusionCombinedDMFTModel(
+            device=device,
+            model_dmt=dmt_model,
+            model_ft=ft_model,
+            k=k,
+            freeze_towers=freeze_towers,
+        ).to(device)
+    elif model_name == "MidFusionCombinedDMFTModel":
+        fusion_model = MidFusionCombinedDMFTModel(
+            device=device,
+            model_dmt=dmt_model,
+            model_ft=ft_model,
+            k=k,
+            freeze_towers=freeze_towers,
+        ).to(device)
+    else:
+        raise SyntaxError(f"{model_name} is currently not available. Use other currently supported fusion models")
+
+    return fusion_model
 
 
 def train(config):
@@ -264,8 +367,15 @@ def train(config):
     print("val dataset length: ", len(val_dataset))
     print("test dataset length: ", len(test_dataset))
 
-    # Initialize the model
-    model = models_htable[model_name](resolution, mode, dropout, device).to(device)
+    combine_models = config.get("combine_model-dmt_and_model-ft", False)
+    if model_name in ["LateFusionCombinedDMFTModel", "MidFusionCombinedDMFTModel"]:
+        if not combine_models:
+            warnings.warn("LateFusionCombinedDMFTModel selected but 'combine_model-dmt_and_model-ft' is False. Proceeding without fusion.")
+        model = _build_fusion_model(config, device, resolution)
+    else:
+        if combine_models:
+            warnings.warn("'combine_model-dmt_and_model-ft' is set but model_name is not LateFusionCombinedDMFTModel. Flag will be ignored.")
+        model = models_htable[model_name](resolution, mode, dropout, device).to(device)
     
     
     # Setup optimizer and loss function
@@ -274,8 +384,9 @@ def train(config):
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
     criterion = nn.CrossEntropyLoss()
 
-    history, best_test_acc, best_epoch, test_acc, wrong_examples, wrong_labels = _train(
+    history, best_val_acc, best_epoch, test_acc, wrong_examples, wrong_labels = _train(
         model,
+        model_name,
         train_loader,
         test_loader,
         optimizer,
@@ -289,7 +400,7 @@ def train(config):
         checkpoint_dir=checkpoint_dir,
     )
 
-    plot_accuracies(history, resolution, model_name, writer, config, test_acc, wrong_examples, wrong_labels, checkpoint_dir, mode, best_test_acc, best_epoch)
+    plot_accuracies(history, resolution, model_name, writer, config, test_acc, wrong_examples, wrong_labels, checkpoint_dir, mode, best_val_acc, best_epoch)
     
 
 def main():        

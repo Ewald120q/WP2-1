@@ -126,3 +126,23 @@ tensorboard --logdir tensorboard_runs/
 
 - **Model Checkpoints**: Saved with filenames indicating epoch, training accuracy, and validation accuracy.
 - **Performance Plots**: Visualizations of training/validation loss and accuracy across epochs.
+
+## Routing rejectors
+
+`TorchRejectionEnsemble` can route samples between a lightweight and heavyweight classifier using either a PyTorch module or an sklearn estimator. Both variants share the same lifecycle: generate routing pseudo-labels via `prepare_fit`, balance them with `_splitTrainData`, and call `fit_routing` to train and plug in the rejector.
+
+### Torch-based rejector
+
+1. Instantiate a Torch model (e.g., `training_models.models_htable[...]`) and freeze everything except the classifier head.
+2. Wrap it with `rejector.Rejector(model, device)`.
+3. Pass the wrapper into `TorchRejectionEnsemble(..., rejector=rejector)`.
+4. Training uses the small model's feature tensor by default, so no extra hooks are needed.
+
+### sklearn-based rejector
+
+1. Choose/define a subclass of `Rejector` that overrides `prepare_inputs` to operate on raw batches, e.g. `skrejector.SNRDT_Rejector`.
+2. Implement `predict_proba` to return a **torch tensor** (the helper in `skrejector.py` converts sklearn's `predict_proba` output via `torch.from_numpy`).
+3. Instantiate the class and inject it into the ensemble just like the Torch version.
+4. Optional: persist/reload the estimator with `save`/`load` using `joblib`.
+
+Thanks to the shared interface (`fit`, `predict_proba`, `prepare_inputs`), you can switch between Torch and sklearn rejectors without touching the ensemble code.

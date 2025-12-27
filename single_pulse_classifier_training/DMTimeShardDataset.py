@@ -47,6 +47,9 @@ class DMTimeShardDataset(torch.utils.data.Dataset):
         if split not in {"train", "test"}:
             raise ValueError(f"Unsupported split '{split}'. Expected 'train' or 'test'.")
 
+        # Persist configuration metadata so downstream tooling can recreate matching datasets
+        self.cfg = dict(cfg)
+        self.split = split
         dm_split_dir = os.path.join(cfg["output_dir"], "dm_time_shards", split)
         freq_split_dir = os.path.join(cfg["output_dir"], "dedispersed_freq_time_shards", split)
 

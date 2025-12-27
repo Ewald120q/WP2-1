@@ -32,9 +32,11 @@ def get_filename(config, resolution):
 
 
 # Function to save model checkpoint
-def save_checkpoint(model, optimizer, epoch, accuracy, val_accuracy, checkpoint_path):
+def save_checkpoint(model, model_name,  optimizer, epoch, accuracy, val_accuracy, checkpoint_path):
     #os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    checkpoint_filename = f'prot-{epoch:03d}-{accuracy:.3f}-{val_accuracy:.3f}.pth'
+    if val_accuracy is None:
+        val_accuracy = -1
+    checkpoint_filename = f'prot-{model_name}-{epoch:03d}-{accuracy:.3f}-{val_accuracy:.3f}.pth'
     full_path = os.path.join(checkpoint_path, checkpoint_filename)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     
