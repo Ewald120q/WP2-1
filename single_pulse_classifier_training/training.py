@@ -14,13 +14,14 @@ from datetime import datetime
 import math
 import warnings
 from training_utils import _slugify_component, save_checkpoint, label_encoding,load_config, plot_accuracies
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 from DMTimeShardDataset import *
 
 
-def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_epochs,
-           *, val_dataloader=None, criterion=None, scheduler=None, writer=None,
-           device=None, patience=None, checkpoint_dir=None, targets_train=None, targets_test=None):
+def _train(model, model_name, train_dataloader, val_dataloader, optimizer, num_epochs,
+           *, criterion=None, scheduler=None, writer=None,
+           device=None, patience=None, checkpoint_dir=None, targets_train=None, targets_val=None):
     device = device or next(model.parameters()).device
     criterion = criterion or nn.CrossEntropyLoss()
     patience = patience if patience is not None else num_epochs
@@ -29,24 +30,24 @@ def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_
     train_accuracies = []
     val_losses = []
     val_accuracies = []
-    test_losses = []
-    test_accuracies = []
     best_val_acc = 0.0
     best_epoch = 0
     patience_counter = 0
 
     train_targets_tensor = None
-    test_targets_tensor = None
+    val_targets_tensor = None
     if targets_train is not None:
         train_targets_tensor = torch.as_tensor(targets_train, dtype=torch.long, device=device)
-    if targets_test is not None:
-        test_targets_tensor = torch.as_tensor(targets_test, dtype=torch.long, device=device)
+    if targets_val is not None:
+        val_targets_tensor = torch.as_tensor(targets_val, dtype=torch.long, device=device)
 
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
         correct_train = 0
         total_train = 0
+        all_train_preds = []
+        all_train_labels = []
 
         train_offset = 0
         for batch in tqdm(train_dataloader):
@@ -66,23 +67,33 @@ def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_
             _, predicted = torch.max(outputs.data, 1)
             total_train += labels.size(0)
             correct_train += (predicted == labels).sum().item()
+            all_train_preds.extend(predicted.cpu().numpy())
+            all_train_labels.extend(labels.cpu().numpy())
 
         train_loss = running_loss / max(len(train_dataloader), 1)
         train_acc = correct_train / max(total_train, 1)
+        train_precision = precision_score(all_train_labels, all_train_preds, average='binary', zero_division=0)
+        train_recall = recall_score(all_train_labels, all_train_preds, average='binary', zero_division=0)
+        train_f1 = f1_score(all_train_labels, all_train_preds, average='binary', zero_division=0)
 
         model.eval()
         val_loss = None
         val_acc = None
+        val_precision = None
+        val_recall = None
+        val_f1 = None
         if val_dataloader is not None:
             val_running_loss = 0.0
             correct_val = 0
             total_val = 0
+            all_val_preds = []
+            all_val_labels = []
             with torch.no_grad():
                 val_offset = 0
                 for batch in val_dataloader:
-                    if test_targets_tensor is not None:
+                    if val_targets_tensor is not None:
                         batch_size = batch["label"].shape[0]
-                        labels = test_targets_tensor[val_offset:val_offset + batch_size]
+                        labels = val_targets_tensor[val_offset:val_offset + batch_size]
                         val_offset += batch_size
                     else:
                         labels = batch["label"].to(device)
@@ -93,49 +104,46 @@ def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_
                     _, predicted = torch.max(outputs.data, 1)
                     total_val += labels.size(0)
                     correct_val += (predicted == labels).sum().item()
+                    all_val_preds.extend(predicted.cpu().numpy())
+                    all_val_labels.extend(labels.cpu().numpy())
             val_loss = val_running_loss / max(len(val_dataloader), 1)
             val_acc = correct_val / max(total_val, 1)
+            val_precision = precision_score(all_val_labels, all_val_preds, average='binary', zero_division=0)
+            val_recall = recall_score(all_val_labels, all_val_preds, average='binary', zero_division=0)
+            val_f1 = f1_score(all_val_labels, all_val_preds, average='binary', zero_division=0)
 
-        test_loss = None
-        test_acc = None
-        if test_dataloader is not None:
-            test_running_loss = 0.0
-            correct_test = 0
-            total_test = 0
-            with torch.no_grad():
-                test_offset = 0
-                for batch in test_dataloader:
-                    if test_targets_tensor is not None:
-                        batch_size = batch["label"].shape[0]
-                        labels = test_targets_tensor[test_offset:test_offset + batch_size]
-                        test_offset += batch_size
-                    else:
-                        labels = batch["label"].to(device)
-                    outputs = model(batch)
-                    loss = criterion(outputs.float(), torch.nn.functional.one_hot(labels, num_classes=2).float())
-
-                    test_running_loss += loss.item()
-                    _, predicted = torch.max(outputs.data, 1)
-                    total_test += labels.size(0)
-                    correct_test += (predicted == labels).sum().item()
-            test_loss = test_running_loss / max(len(test_dataloader), 1)
-            test_acc = correct_test / max(total_test, 1)
-
-        #scheduler.step(test_loss)
-        #scheduler.step(train_loss)
+        if scheduler is not None:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                monitor_loss = val_loss if val_loss is not None else train_loss
+                scheduler.step(monitor_loss)
+            else:
+                scheduler.step()
 
         loss_dict = {'train': train_loss}
         if val_loss is not None:
             loss_dict['val'] = val_loss
-            loss_dict['test'] = test_loss
         writer.add_scalars('Loss', loss_dict, epoch + 1)
         
         acc_dict = {'train': train_acc}
         if val_acc is not None:
             acc_dict['val'] = val_acc
-        if test_acc is not None:
-            acc_dict['test'] = test_acc
         writer.add_scalars('Accuracy', acc_dict, epoch + 1)
+        
+        prec_dict = {'train': train_precision}
+        if val_precision is not None:
+            prec_dict['val'] = val_precision
+        writer.add_scalars('Precision', prec_dict, epoch + 1)
+        
+        rec_dict = {'train': train_recall}
+        if val_recall is not None:
+            rec_dict['val'] = val_recall
+        writer.add_scalars('Recall', rec_dict, epoch + 1)
+        
+        f1_dict = {'train': train_f1}
+        if val_f1 is not None:
+            f1_dict['val'] = val_f1
+        writer.add_scalars('F1_score', f1_dict, epoch + 1)
+
         writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch + 1)
 
         train_losses.append(train_loss)
@@ -143,74 +151,37 @@ def _train(model, model_name, train_dataloader, test_dataloader, optimizer, num_
         if val_losses is not None:
             val_losses.append(val_loss)
             val_accuracies.append(val_acc)
-        test_losses.append(test_loss)
-        test_accuracies.append(test_acc)
 
         print(f'Epoch [{epoch+1}/{num_epochs}], '
               f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}' +
-              (f', Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}' if val_loss is not None else '') +
-              (f', Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}' if test_loss is not None else ''))
+              (f', Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}' if val_loss is not None else ''))
         
-        if test_acc > best_val_acc:
-            best_val_acc = test_acc
+        # Use validation accuracy for model selection if available
+        current_monitor_acc = val_acc if val_acc is not None else train_acc
+        
+        if current_monitor_acc > best_val_acc:
+            best_val_acc = current_monitor_acc
             best_epoch = epoch + 1
             patience_counter = 0
-            save_checkpoint(model, model_name, optimizer, epoch + 1, train_acc, test_acc, checkpoint_dir)
-            print(f'New best validation accuracy: {test_acc:.4f} - Model saved!')
+            # If we don't have a final test score when saving, just pass None (we compute test acc later!)
+            save_checkpoint(model, model_name, optimizer, epoch + 1, train_acc, val_acc, checkpoint_dir)
+            print(f'New best score: {current_monitor_acc:.4f} - Model saved!')
             if writer is not None:
-                writer.add_scalar('Accuracy/best_test', best_val_acc, epoch + 1)
+                writer.add_scalar('Accuracy/best_val', best_val_acc, epoch + 1)
         else:
             patience_counter += 1
             if patience is not None and patience_counter >= patience:
                 print(f'Early stopping triggered after {epoch + 1} epochs')
                 break
 
-    wrong_examples = np.empty((0,))
-    wrong_labels = None
-    final_test_acc = None
-    if test_dataloader is not None:
-        model.eval()
-        wrong_examples_list = []
-        wrong_labels_list = []
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            analyze_offset = 0
-            for batch in test_dataloader:
-                if test_targets_tensor is not None:
-                    batch_size = batch["label"].shape[0]
-                    labels = test_targets_tensor[analyze_offset:analyze_offset + batch_size]
-                    analyze_offset += batch_size
-                else:
-                    labels = batch["label"].to(device)
-                metadata = batch.get("metadata")
-                outputs = model(batch)
-                _, predicted = torch.max(outputs, 1)
-                total += predicted.size(0)
-                correct += (predicted == labels).sum().item()
-                if metadata is not None:
-                    metadata = metadata.to(device)
-                    wrong_mask = predicted != labels
-                    if wrong_mask.any():
-                        wrong_examples_list.append(metadata[wrong_mask].cpu().numpy())
-                        wrong_labels_list.append(labels[wrong_mask].cpu().numpy())
-        final_test_acc = correct / total if total > 0 else 0.0
-        if writer is not None:
-            writer.add_scalar('Accuracy/test', final_test_acc, 0)
-        if wrong_examples_list:
-            wrong_examples = np.concatenate(wrong_examples_list, axis=0)
-            wrong_labels = np.concatenate(wrong_labels_list, axis=0) if wrong_labels_list else None
-
     history = {
         'train_loss': train_losses,
         'train_accuracy': train_accuracies,
         'val_loss': val_losses,
-        'val_accuracy': val_accuracies,
-        'test_loss': test_losses,
-        'test_accuracy': test_accuracies,
+        'val_accuracy': val_accuracies
     }
 
-    return history, best_val_acc, best_epoch, final_test_acc, wrong_examples, wrong_labels
+    return history, best_val_acc, best_epoch
 
 
 def _load_pretrained_model(model_key, checkpoint_path, *, resolution, mode, dropout, device):
@@ -244,7 +215,7 @@ def _build_fusion_model(config, device, resolution):
         config.get("model_dmt_path"),
         resolution=resolution,
         mode="dmt",
-        dropout=config.get("model_dmt_dropout", False),
+        dropout=config.get("model_dmt_dropout", 0.0),
         device=device,
     )
 
@@ -253,7 +224,7 @@ def _build_fusion_model(config, device, resolution):
         config.get("model_ft_path"),
         resolution=resolution,
         mode="ft",
-        dropout=config.get("model_ft_dropout", False),
+        dropout=config.get("model_ft_dropout", 0.0),
         device=device,
     )
 
@@ -281,6 +252,38 @@ def _build_fusion_model(config, device, resolution):
         raise SyntaxError(f"{model_name} is currently not available. Use other currently supported fusion models")
 
     return fusion_model
+
+
+def count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
+
+
+def get_model_parameters_from_config(config):
+    """
+    Instantiates the model given a config and prints/returns its parameter count.
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model_name = config["model_name"]
+    resolution = config.get("resolution", 256)
+    mode = config.get("mode", "dmt")
+    dropout = config.get("dropout", 0.0)
+    
+    if model_name in ["LateFusionCombinedDMFTModel", "MidFusionCombinedDMFTModel"]:
+        # _build_fusion_model handles the loading of underlying models
+        model = _build_fusion_model(config, device, resolution)
+    else:
+        model = models_htable[model_name](resolution, mode, dropout, device).to(device)
+        
+    total_params, trainable_params = count_parameters(model)
+    print(f"--- Parameter Count info ---")
+    print(f"Model: {model_name} (Mode: {mode}, Resolution: {resolution})")
+    print(f"Total Parameters: {total_params:,}")
+    print(f"Trainable Parameters: {trainable_params:,}")
+    print(f"----------------------------")
+    
+    return total_params, trainable_params
 
 
 def train(config):
@@ -324,41 +327,36 @@ def train(config):
         "prefix": config["dataset_prefix"],  # e.g. basename of the filterbank
     }
 
-    full_train_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=True, split="train")
-    full_train_dataset.labels = label_encoding(full_train_dataset.labels.astype(object))
+    train_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=True, split="train")
+    train_dataset.labels = label_encoding(train_dataset.labels.astype(object))
 
-    val_fraction = config.get("val_fraction", 0.1111)
-    if not 0 < val_fraction < 1:
-        raise ValueError("'val_fraction' must be between 0 and 1.")
-
-    num_train_samples = len(full_train_dataset)
-    if num_train_samples < 2:
-        raise ValueError("Need at least 2 training samples to create a validation split.")
-
-    split_idx_val = math.floor(num_train_samples * (1 - val_fraction))
-    split_idx_val = min(max(split_idx_val, 1), num_train_samples - 1)
-
-    train_indices = range(0, split_idx_val)
-    val_indices = range(split_idx_val, num_train_samples)
-
-    train_dataset = Subset(full_train_dataset, train_indices)
-    val_dataset = Subset(full_train_dataset, val_indices)
+    val_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=True, split="val")
+    val_dataset.labels = label_encoding(val_dataset.labels.astype(object))
 
     test_dataset = DMTimeShardDataset(dataset_cfg, use_freq_time=True, split="test")
     test_dataset.labels = label_encoding(test_dataset.labels.astype(object))
 
     train_loader = DataLoader(train_dataset,
-                              batch_size=config["batch_size"],
+                              batch_size=config.get("batch_size"),
                               shuffle=False,
-                              num_workers=config.get("num_workers", 8))
+                              num_workers=config.get("num_workers"),
+                              pin_memory=True,
+                              persistent_workers=True,
+                              prefetch_factor=config.get("prefetch_factor"))
     val_loader = DataLoader(val_dataset,
-                              batch_size=config["batch_size"],
+                              batch_size=config.get("batch_size"),
                               shuffle=False,
-                              num_workers=config.get("num_workers", 8))
+                              num_workers=config.get("num_workers"),
+                              pin_memory=True,
+                              persistent_workers=True,
+                              prefetch_factor=config.get("prefetch_factor"))
     test_loader = DataLoader(test_dataset,
-                            batch_size=config["batch_size"],
+                            batch_size=config.get("batch_size"),
                             shuffle=False,
-                            num_workers=config.get("num_workers", 8))
+                            num_workers=config.get("num_workers"),
+                            pin_memory=True,
+                            persistent_workers=True,
+                            prefetch_factor=config.get("prefetch_factor"))
 
     print("Train Loader length: ", len(train_loader))
     print("Val Loader length: ", len(val_loader))
@@ -377,6 +375,10 @@ def train(config):
             warnings.warn("'combine_model-dmt_and_model-ft' is set but model_name is not LateFusionCombinedDMFTModel. Flag will be ignored.")
         model = models_htable[model_name](resolution, mode, dropout, device).to(device)
     
+    total_params, trainable_params = count_parameters(model)
+    print(f"Model: {model_name}")
+    print(f"Total Parameters: {total_params:,}")
+    print(f"Trainable Parameters: {trainable_params:,}")
     
     # Setup optimizer and loss function
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -384,14 +386,13 @@ def train(config):
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
     criterion = nn.CrossEntropyLoss()
 
-    history, best_val_acc, best_epoch, test_acc, wrong_examples, wrong_labels = _train(
+    history, best_val_acc, best_epoch = _train(
         model,
         model_name,
         train_loader,
-        test_loader,
+        val_loader,
         optimizer,
         config["num_epochs"],
-        val_dataloader=val_loader,
         criterion=criterion,
         scheduler=scheduler,
         writer=writer,
@@ -400,8 +401,57 @@ def train(config):
         checkpoint_dir=checkpoint_dir,
     )
 
-    plot_accuracies(history, resolution, model_name, writer, config, test_acc, wrong_examples, wrong_labels, checkpoint_dir, mode, best_val_acc, best_epoch)
+    # Evaluate test dataset at the very end
     
+    test_acc = 0.0
+    wrong_examples = np.empty((0,))
+    wrong_labels = None
+
+    if test_loader is not None:
+        print("\n--- Starting Final Evaluation on Test Set ---")
+        # Ensure we evaluate the BEST model found during training
+        checkpoint_path = os.path.join(checkpoint_dir, f"{model_name}_best.pth")
+        if os.path.exists(checkpoint_path):
+            print(f"Loading best checkpoint from epoch {best_epoch} for test set evaluation.")
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+        
+        model.eval()
+        wrong_examples_list = []
+        wrong_labels_list = []
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch in test_loader:
+                labels = batch["label"].to(device)
+                metadata = batch.get("metadata")
+                outputs = model(batch)
+                _, predicted = torch.max(outputs, 1)
+                total += predicted.size(0)
+                correct += (predicted == labels).sum().item()
+                
+                if metadata is not None:
+                    metadata = metadata.to(device)
+                    wrong_mask = predicted != labels
+                    if wrong_mask.any():
+                        wrong_examples_list.append(metadata[wrong_mask].cpu().numpy())
+                        wrong_labels_list.append(labels[wrong_mask].cpu().numpy())
+                        
+        test_acc = correct / total if total > 0 else 0.0
+        print(f"Final Test Accuracy: {test_acc:.4f}\n")
+        
+        if writer is not None:
+            writer.add_scalar('Accuracy/test', test_acc, 0)
+            
+        if wrong_examples_list:
+            wrong_examples = np.concatenate(wrong_examples_list, axis=0)
+            wrong_labels = np.concatenate(wrong_labels_list, axis=0) if wrong_labels_list else None
+
+    try:
+        plot_accuracies(history, resolution, model_name, writer, config, test_acc, wrong_examples, wrong_labels, checkpoint_dir, mode, best_val_acc, best_epoch)
+    except:
+        print("Fehler beim plotting. Plotting wird übersprungen")
 
 def main():        
     # Load configuration file

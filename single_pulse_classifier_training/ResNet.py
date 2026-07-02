@@ -6,12 +6,13 @@ class BasicBlock(nn.Module):
 
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, downsample=None):
+    def __init__(self, in_planes, planes, stride=1, downsample=None, dropout_prob=0.0):
         super(BasicBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3,
                                stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout2d(p=dropout_prob) if dropout_prob > 0 else nn.Identity()
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
                                stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
@@ -23,6 +24,8 @@ class BasicBlock(nn.Module):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
+
+        out = self.dropout(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
@@ -40,7 +43,7 @@ class Bottleneck(nn.Module):
 
     expansion = 4
 
-    def __init__(self, in_planes, planes, stride=1, downsample=None):
+    def __init__(self, in_planes, planes, stride=1, downsample=None, **kwargs):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -77,7 +80,7 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes=2, in_channels=1):
+    def __init__(self, block, layers, num_classes=2, in_channels=1, dropout_prob=0.0):
         """
         block: BasicBlock
         layers: Anzahl Blöcke pro Stage, z.B. [2,2,2,2] für ResNet18
@@ -85,110 +88,25 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.inplanes = 64
 
-
-
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2,
-                               padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        # ResNet-Stages
-        self.layer1 = self._make_layer(block, 64,  layers[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-
-        # Global Average Pool + FC
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.maxpool2 = nn.AdaptiveMaxPool2d((1,1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
-    def _make_layer(self, block, planes, blocks, stride=1):
-        """
-        planes: Ausgabe-Kanäle der Stage
-        blocks: Anzahl Residual-Blöcke in der Stage
-        stride: erster Block kann Downsampling machen
-        """
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
-
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
-        self.inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
-
-        return nn.Sequential(*layers)
-    
-    def forward_mid_level_features(self, x):
-        # Input: (B, C, H, W)
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
-        x = self.layer2(x)  # 1/8
-        return x
-
-    def forward_features(self, x):
-        # Input: (B, C, H, W)
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
-        x = self.layer2(x)  # 1/8
-        x = self.layer3(x)  # 1/16
-        x = self.layer4(x)  # 1/32
-
-        x = self.maxpool2(x)           # -> (B, 512, 1, 1)
-        x = torch.flatten(x, 1)       # -> (B, 512)
-        return x
-    
-    def forward(self, x):
-        x = self.forward_features(x)
-        x = self.fc(x)                # -> (B, num_classes)
-        return x
-
-
-class ResNet_dropout(nn.Module):
-    def __init__(self, block, layers, num_classes=2, in_channels=1):
-        """
-        block: BasicBlock
-        layers: Anzahl Blöcke pro Stage, z.B. [2,2,2,2] für ResNet18
-        """
-        super(ResNet_dropout, self).__init__()
-        self.inplanes = 64
-
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2,
                                padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
-        self.dropout_conv = nn.Dropout2d(p=0.2)
-        self.dropout_fc = nn.Dropout(p=0.4)
+        self.dropout_fc = nn.Dropout(p=dropout_prob) if dropout_prob > 0 else nn.Identity()
 
-        # ResNet-Stages
-        self.layer1 = self._make_layer(block, 64,  layers[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-        # Global Average Pool + FC
+        self.layer1 = self._make_layer(block, 64,  layers[0], stride=1, dropout_prob=dropout_prob)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dropout_prob=dropout_prob)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dropout_prob=dropout_prob)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dropout_prob=dropout_prob)
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         #self.maxpool2 = nn.AdaptiveMaxPool2d((1,1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, dropout_prob=0.0):
         """
         planes: Ausgabe-Kanäle der Stage
         blocks: Anzahl Residual-Blöcke in der Stage
@@ -203,10 +121,10 @@ class ResNet_dropout(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
+        layers.append(block(self.inplanes, planes, stride, downsample, dropout_prob=dropout_prob))
         self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes, dropout_prob=dropout_prob))
 
         return nn.Sequential(*layers)
     
@@ -216,10 +134,8 @@ class ResNet_dropout(nn.Module):
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-        
-        x = self.dropout_conv(x)
 
-        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
+        x = self.layer1(x)  # 1/4 resolution
         x = self.layer2(x)  # 1/8
         return x
 
@@ -230,9 +146,7 @@ class ResNet_dropout(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
         
-        x = self.dropout_conv(x)
-        
-        x = self.layer1(x)  # 1/4 Auflösung (nach conv1+pool)
+        x = self.layer1(x)  # 1/4 resoultion
         x = self.layer2(x)  # 1/8
         x = self.layer3(x)  # 1/16
         x = self.layer4(x)  # 1/32

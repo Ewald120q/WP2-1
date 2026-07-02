@@ -18,13 +18,13 @@ device = "cuda"
 
 rejector = SNRDT_Rejector(device)
 
-small_weights = "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/checkpoints/ch_point_DM_time_binary_classificator_241002_3_dropout_256/prot-015-0.980-0.985.pth"
+small_weights = "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/final_checkpoints/baseline_rejection_ensemble/prot-DM_time_binary_classificator_241002_3_GAP-014-0.764-0.740.pth"
 
 small_model = training_models.models_htable["DM_time_binary_classificator_241002_3"](256, mode="dmt", dropout=True, device=device).to(device)
 small_model.load_state_dict(torch.load(small_weights, map_location=device)["model_state_dict"])
 
 
-big_weights = "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/checkpoints/ch_point_DM_time_binary_classificator_resnet18_dropout_256/prot-014-0.972-0.977.pth"
+big_weights = "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/final_checkpoints/baseline_rejection_ensemble/prot-DM_time_binary_classificator_resnet18-003-0.993-0.993.pth"
 
 big_model = training_models.models_htable['DM_time_binary_classificator_resnet18'](256, mode="ft", dropout=True, device=device).to(device)
 big_model.load_state_dict(torch.load(big_weights, map_location=device)["model_state_dict"])

@@ -77,7 +77,7 @@ def get_predictions(f, data_loader, return_confidences = False, return_embedding
             return all_preds
 
 class TorchRejectionEnsemble():
-    def __init__(self, fsmall, fbig, p, rejector, calibration = True):
+    def __init__(self, fsmall, fbig, p, rejector, calibration = True, reject_threshold_r1=None):
         """
         Initialize a RejectionEnsemble object.
 
@@ -93,6 +93,7 @@ class TorchRejectionEnsemble():
         self.rejector = rejector
         self.p = p
         self.calibration = calibration
+        self.reject_threshold_r1 = reject_threshold_r1
 
     def prepare_fit(self, train_loader, test_loader):
         """
@@ -105,68 +106,219 @@ class TorchRejectionEnsemble():
             The result of the _fit method.
 
         """
+        print("current setup for routing targets: if f_small wrong, then REJECT")
         print("get fsmall train predictions")
         train_preds_small, Y_train = get_predictions(self.fsmall, train_loader, return_labels=True)
         Y_train = np.array(Y_train)
 
-        print("get fbig train predictions")
-        train_preds_big = get_predictions(self.fbig, train_loader)
+        #print("get fbig train predictions")
+        #train_preds_big = get_predictions(self.fbig, train_loader)
         
         print("get fsmall test predictions")
         test_preds_small, Y_test = get_predictions(self.fsmall, test_loader, return_labels=True)
         Y_test = np.array(Y_test)
 
-        print("get fbig test predictions")
-        test_preds_big = get_predictions(self.fbig, test_loader)
+        #print("get fbig test predictions")
+        #test_preds_big = get_predictions(self.fbig, test_loader)
         
         print("start fitting rejector")
-        #return (train_loader, Y_train, train_preds_small, train_preds_big, test_loader, Y_test, test_preds_small, test_preds_big)
-                #create pseudo labels
-        argmax_train_preds_big = train_preds_big.argmax(1)
+        # keep fsmall if fsmall is correct = 0;route to next model if current one is wrong = 1
         argmax_train_preds_small = train_preds_small.argmax(1)
-        routing_targets_train = []
-        for i in range(train_preds_big.shape[0]):
-            if argmax_train_preds_big[i] == argmax_train_preds_small[i]:
-                routing_targets_train.append(0)
-            else:
-                if argmax_train_preds_big[i] == Y_train[i]:
-                    routing_targets_train.append(1)
-                else:
-                    routing_targets_train.append(0)
-        
-        routing_targets_train = np.array(routing_targets_train)
-        
-        #targets arent split equally. EJECT class has a proportion of ~2% in train data, so it does not properly learn.
-        #so take amount of EJECT targets, and extract same amount of non EJECT targets. Use the confidence of the model, to take the hardest ones
+        routing_targets_train = (argmax_train_preds_small != Y_train).astype(np.int64)
         
         print("TRAIN: targets before balancing. REJECT: ", np.count_nonzero(routing_targets_train == 1), "no REJECT: ", np.count_nonzero(routing_targets_train == 0))
-        #X_train_dataloader, targets_train = self._splitTrainData(X_train_dataloader, targets_train, train_preds_small)   
-        print("TRAIN: targets after balancing. REJECT: ",np.count_nonzero(routing_targets_train == 1),"no REJECT: ",np.count_nonzero(routing_targets_train == 0))
-        
+
         
         #for testing rejector
-        argmax_test_preds_big = test_preds_big.argmax(1)
         argmax_test_preds_small = test_preds_small.argmax(1)
-        routing_targets_test = []
-        for i in range(test_preds_big.shape[0]):
-            if argmax_test_preds_big[i] == argmax_test_preds_small[i]:
-                routing_targets_test.append(0)
-            else:
-                if argmax_test_preds_big[i] == Y_test[i]:
-                    routing_targets_test.append(1)
-                else:
-                    routing_targets_test.append(0)
+        routing_targets_test = (argmax_test_preds_small != Y_test).astype(np.int64)
         
-        routing_targets_test = np.array(routing_targets_test)
-        
-        print("TEST: targets before balancing. REJECT: ", np.count_nonzero(routing_targets_train == 1), "no REJECT: ", np.count_nonzero(routing_targets_train == 0))
-        #X_test_dataloader, targets_test = self._splitTrainData(X_test_dataloader, targets_test, test_preds_small)  
-        print("TEST: targets after balancing. REJECT: ",np.count_nonzero(routing_targets_train == 1),"no REJECT: ",np.count_nonzero(routing_targets_train == 0))
-        
+        print("TEST: targets before balancing. REJECT: ", np.count_nonzero(routing_targets_test == 1), "no REJECT: ", np.count_nonzero(routing_targets_test == 0))
+
         print("created pseudo labels")
         print("WARNING: Psuedolabels are unbalanced. Please use self._splitTrainingData, to balance them")
         
         return  routing_targets_train, routing_targets_test, train_preds_small, test_preds_small
+
+    def prepare_fit_r2(self, train_loader, test_loader, f_large, return_debug=False):
+        """Create routing targets for a *second* rejector (r2) in a cascaded setup.
+
+        Assumed cascade (stage 1 already defined by this instance):
+
+            f_small --(r1 + threshold/top-k)--> f_mid (self.fbig)
+
+        This method computes targets for a second rejector that should decide whether to
+        reject *f_mid* to *f_large* **only for samples that stage-1 would route to f_mid**.
+
+        Target definition (same as prepare_fit):
+
+            routing_target_r2 = 1 (REJECT to f_large) if f_mid is wrong
+            routing_target_r2 = 0 (KEEP f_mid)       if f_mid is correct
+
+        Notes:
+        - The subset selection for r2 is determined by r1, respecting `calibration` and
+          `reject_threshold_r1`.
+        - Returned targets are unbalanced by nature and can be balanced using `_splitTrainData`.
+
+        Returns (default, return_debug=False):
+            Exactly like `prepare_fit`, but for stage-2 targets on the *r1-filtered subset*:
+
+                routing_targets_train_r2, routing_targets_test_r2,
+                mid_train_logits_sub, mid_test_logits_sub
+
+            These logits can be passed into `_splitTrainData(..., routing_targets, pulse_preds)`.
+
+        Returns (if return_debug=True):
+            The same 4-tuple as above plus extra arrays for analysis:
+
+                large_train_logits_sub, large_test_logits_sub,
+                Y_train_sub, Y_test_sub,
+                train_mask_r1, test_mask_r1
+        """
+        if f_large is None:
+            raise ValueError("f_large must be provided for prepare_fit_r2")
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        def _predict_mid_large_and_labels(loader, desc):
+            # Collect mid/large logits + labels, then apply r1 to get the subset.
+            all_mid_logits = []
+            all_large_logits = []
+            all_labels = []
+
+            for batch in tqdm.tqdm(loader, desc=desc):
+                labels = batch["label"].to(device)
+                all_labels.append(labels.detach().cpu())
+
+                with torch.no_grad():
+                    # logits from mid (= self.fbig in stage-1)
+                    mid_feats = self.fbig.features(batch)
+                    if mid_feats.dim() == 3:
+                        mid_feats = mid_feats.unsqueeze(0)
+                    mid_logits = self.fbig.classifier(mid_feats)
+                    all_mid_logits.append(mid_logits.detach().cpu())
+
+                    # logits from large
+                    large_feats = f_large.features(batch)
+                    if large_feats.dim() == 3:
+                        large_feats = large_feats.unsqueeze(0)
+                    large_logits = f_large.classifier(large_feats)
+                    all_large_logits.append(large_logits.detach().cpu())
+
+            mid_logits_np = torch.vstack(all_mid_logits).numpy()
+            large_logits_np = torch.vstack(all_large_logits).numpy()
+            y_np = torch.cat(all_labels).cpu().numpy()
+            return mid_logits_np, large_logits_np, y_np
+
+        def _r1_reject_mask_for_loader(loader, desc):
+            # Decide which samples go to f_mid in stage-1, honoring threshold/top-k.
+            if self.rejector is None:
+                # No rejector => stage-1 never routes to mid (unless p==1 and calibration True).
+                if self.calibration and self.p == 1:
+                    # everything would go to f_mid
+                    return np.ones(len(loader.dataset), dtype=bool)
+                return np.zeros(len(loader.dataset), dtype=bool)
+
+            self.fsmall.eval()
+            self.fbig.eval()
+            self.rejector.eval() if hasattr(self.rejector, "eval") else None
+
+            all_probs = []
+            for batch in tqdm.tqdm(loader, desc=desc):
+                with torch.no_grad():
+                    x_sfeatures = self.fsmall.features(batch)
+                    rejector_inputs = self.rejector.prepare_inputs(batch, x_sfeatures)
+                    r_pred = self.rejector.predict_proba(rejector_inputs)
+
+                if isinstance(r_pred, np.ndarray):
+                    r_pred_tensor = torch.from_numpy(r_pred)
+                elif torch.is_tensor(r_pred):
+                    r_pred_tensor = r_pred
+                else:
+                    r_pred_tensor = torch.as_tensor(r_pred)
+
+                # Use probability of class 1 (reject)
+                r_probs = torch.softmax(r_pred_tensor, dim=1)[:, 1].detach().cpu().numpy()
+                all_probs.append(r_probs)
+
+            probs = np.concatenate(all_probs, axis=0)
+            M = probs.shape[0]
+
+            if self.calibration:
+                P = int(np.floor(self.p * M))
+                if P <= 0:
+                    return np.zeros(M, dtype=bool)
+                # choose top-P to route to mid
+                idx = np.argsort(-probs)[:P]
+                mask = np.zeros(M, dtype=bool)
+                mask[idx] = True
+                return mask
+
+            # static threshold mode
+            if self.reject_threshold_r1 is not None:
+                return probs >= float(self.reject_threshold_r1)
+
+            # fallback: argmax based decisions (equivalent to threshold 0.5 for binary softmax)
+            return probs >= 0.5
+
+        print("\nprepare_fit_r2: stage-1 is (f_small -> r1 -> f_mid). Building r2 targets for (f_mid -> f_large).")
+        print("Target rule: if f_mid wrong => REJECT to f_large")
+
+        # ---- Train split ----
+        print("prepare_fit_r2: computing r1 routing mask for TRAIN")
+        train_mask_r1 = _r1_reject_mask_for_loader(train_loader, desc="r1 routing (train)")
+        print(f"TRAIN: samples routed to f_mid by r1: {train_mask_r1.sum()} / {train_mask_r1.size}")
+
+        print("prepare_fit_r2: getting f_mid / f_large logits (TRAIN)")
+        mid_train_logits, large_train_logits, Y_train = _predict_mid_large_and_labels(train_loader, desc="logits (train)")
+
+        mid_train_logits_sub = mid_train_logits[train_mask_r1]
+        large_train_logits_sub = large_train_logits[train_mask_r1]
+        Y_train_sub = Y_train[train_mask_r1]
+
+        mid_train_pred = mid_train_logits_sub.argmax(1)
+        routing_targets_train_r2 = (mid_train_pred != Y_train_sub).astype(np.int64)
+        print("TRAIN r2 targets. REJECT:", np.count_nonzero(routing_targets_train_r2 == 1),
+              "no REJECT:", np.count_nonzero(routing_targets_train_r2 == 0))
+
+        # ---- Test split ----
+        print("prepare_fit_r2: computing r1 routing mask for TEST")
+        test_mask_r1 = _r1_reject_mask_for_loader(test_loader, desc="r1 routing (test)")
+        print(f"TEST: samples routed to f_mid by r1: {test_mask_r1.sum()} / {test_mask_r1.size}")
+
+        print("prepare_fit_r2: getting f_mid / f_large logits (TEST)")
+        mid_test_logits, large_test_logits, Y_test = _predict_mid_large_and_labels(test_loader, desc="logits (test)")
+
+        mid_test_logits_sub = mid_test_logits[test_mask_r1]
+        large_test_logits_sub = large_test_logits[test_mask_r1]
+        Y_test_sub = Y_test[test_mask_r1]
+
+        mid_test_pred = mid_test_logits_sub.argmax(1)
+        routing_targets_test_r2 = (mid_test_pred != Y_test_sub).astype(np.int64)
+        print("TEST r2 targets. REJECT:", np.count_nonzero(routing_targets_test_r2 == 1),
+              "no REJECT:", np.count_nonzero(routing_targets_test_r2 == 0))
+
+        print("created pseudo labels for r2")
+        print("WARNING: Psuedolabels are unbalanced. Please use self._splitTrainData, to balance them")
+
+        base = (
+            routing_targets_train_r2,
+            routing_targets_test_r2,
+            mid_train_logits_sub,
+            mid_test_logits_sub,
+        )
+
+        if not return_debug:
+            return base
+
+        return base + (
+            large_train_logits_sub,
+            large_test_logits_sub,
+            Y_train_sub,
+            Y_test_sub,
+            train_mask_r1,
+            test_mask_r1,
+        )
 
     def fit_routing(self, pulse_X_train_dataloader, routing_targets_train, pulse_X_test_dataloader, routing_targets_test):
         """
@@ -256,8 +408,6 @@ class TorchRejectionEnsemble():
             else:
                 r_pred_tensor = torch.as_tensor(r_pred, device=device)
 
-            print(r_pred_tensor)
-
             if self.calibration:
                 M = len(T)
                 P = int(np.floor(self.p * M))
@@ -270,10 +420,13 @@ class TorchRejectionEnsemble():
                 Tb_mask[Tb_sorted_indices] = True
                 Ts_mask = ~Tb_mask  
             else:
-                #r_pred_tensor = torch.tensor(r_pred, device=device)
-                
-                Ts_mask = r_pred_tensor.argmax(dim=1) == 0
-                Tb_mask = r_pred_tensor.argmax(dim=1) == 1
+                if self.reject_threshold_r1 is not None:
+                    r_probs = torch.softmax(r_pred_tensor, dim=1)[:, 1]
+                    Tb_mask = r_probs >= float(self.reject_threshold_r1)
+                    Ts_mask = ~Tb_mask
+                else:
+                    Ts_mask = r_pred_tensor.argmax(dim=1) == 0
+                    Tb_mask = r_pred_tensor.argmax(dim=1) == 1
 
             with torch.no_grad():
                 fsmall_preds = self.fsmall.classifier(x_sfeatures[Ts_mask])
@@ -329,6 +482,7 @@ class TorchRejectionEnsemble():
             "rejector": _export_model(self.rejector) if self.rejector is not None else None,
             "p": self.p,
             "calibration": self.calibration,
+            "reject_threshold_r1": self.reject_threshold_r1,
             "has_rejector": self.rejector is not None,
         }
 
@@ -348,6 +502,7 @@ class TorchRejectionEnsemble():
 
         self.p = payload.get("p", self.p)
         self.calibration = payload.get("calibration", self.calibration)
+        self.reject_threshold_r1 = payload.get("reject_threshold_r1", self.reject_threshold_r1)
 
         def _check_metadata(model, metadata, name):
             if not metadata:
@@ -562,15 +717,18 @@ class TorchRejectionEnsemble():
             "batch_size": loader.batch_size,
             "num_workers": loader.num_workers,
             "pin_memory": getattr(loader, "pin_memory", False),
+            "persistent_workers": getattr(loader, "persistent_workers", False),
+            "prefetch_factor": getattr(loader, "prefetch_factor", None),
             "drop_last": getattr(loader, "drop_last", False),
             "shuffle": False,
             "metadata": metadata,
         }
 
     @staticmethod
-    def _deserialize_loader(payload):
+    def _deserialize_loader(payload, loader_overrides=None):
         if payload is None:
             return None
+        loader_overrides = loader_overrides or {}
 
         metadata = payload.get("metadata", {})
         dataset_cfg = metadata.get("dataset_cfg")
@@ -602,12 +760,20 @@ class TorchRejectionEnsemble():
         )
 
         subset = Subset(dataset, payload.get("indices", []))
+        batch_size = loader_overrides.get("batch_size", payload.get("batch_size"))
+        num_workers = loader_overrides.get("num_workers", payload.get("num_workers", 0))
+        pin_memory = loader_overrides.get("pin_memory", payload.get("pin_memory", False))
+        persistent_workers = loader_overrides.get("persistent_workers", payload.get("persistent_workers", False))
+        prefetch_factor = loader_overrides.get("prefetch_factor", payload.get("prefetch_factor", 2))
+
         return DataLoader(
             subset,
-            batch_size=payload.get("batch_size"),
+            batch_size=batch_size,
             shuffle=payload.get("shuffle", False),
-            num_workers=payload.get("num_workers", 0),
-            pin_memory=payload.get("pin_memory", False),
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers and num_workers > 0,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
             drop_last=payload.get("drop_last", False)
         )
 
@@ -643,21 +809,39 @@ class TorchRejectionEnsemble():
 
         torch.save(payload, path)
 
-    def load_balanced_splits(self, path):
+    def load_balanced_splits(self, path, loader_overrides=None):
         if not path:
             raise ValueError("A valid load path must be provided.")
         if not os.path.isfile(path):
             raise FileNotFoundError(f"No balanced split file found at '{path}'.")
 
         payload = _safe_torch_load(path)
-
-        train_loader = self._deserialize_loader(payload.get("train"))
-        test_loader = self._deserialize_loader(payload.get("test"))
+        train_payload = payload.get("train")
+        test_payload = payload.get("test")
         train_targets = np.asarray(payload.get("train_targets"))
         test_targets = np.asarray(payload.get("test_targets"))
 
+        train_payload, train_targets = self._sort_loader_payload_by_indices(train_payload, train_targets)
+        test_payload, test_targets = self._sort_loader_payload_by_indices(test_payload, test_targets)
+
+        train_loader = self._deserialize_loader(train_payload, loader_overrides=loader_overrides)
+        test_loader = self._deserialize_loader(test_payload, loader_overrides=loader_overrides)
+
         return train_loader, train_targets, test_loader, test_targets
 
+    @staticmethod
+    def _sort_loader_payload_by_indices(loader_payload, targets):
+        if loader_payload is None:
+            return loader_payload, targets
+
+        indices = np.asarray(loader_payload.get("indices", []), dtype=np.int64)
+        if indices.size != len(targets):
+            return loader_payload, targets
+
+        order = np.argsort(indices, kind="stable")
+        sorted_payload = dict(loader_payload)
+        sorted_payload["indices"] = indices[order].tolist()
+        return sorted_payload, targets[order]
 
     def _splitTrainData(self, pulse_dataloader, routing_targets, pulse_preds):
         print("targets before balancing. REJECT: ", np.count_nonzero(routing_targets == 1), "no REJECT: ", np.count_nonzero(routing_targets == 0))
@@ -676,25 +860,33 @@ class TorchRejectionEnsemble():
         n1 = len(idx_1)
         n_per_class = min(n0, n1)
 
-        pulse_zero_probs = pulse_probs[idx_0]       # shape: [n0, num_classes]
-        pulse_zero_conf =pulse_zero_probs.max(axis=1)          # max-Confidence pro Sample
+        #pulse_zero_probs = pulse_probs[idx_0]       # shape: [n0, num_classes]
+        #pulse_zero_conf =pulse_zero_probs.max(axis=1)          # max-Confidence pro Sample
 
         # aufsteigend sortiert, somit niedrigste conf zuerst
-        pulse_zero_sorted_rel = pulse_zero_conf.argsort()
-        pulse_zero_selected_rel = pulse_zero_sorted_rel[:n_per_class]
+        #pulse_zero_sorted_rel = pulse_zero_conf.argsort()
+        #pulse_zero_selected_rel = pulse_zero_sorted_rel[:n_per_class]
 
-        pulse_zero_selected_idx = idx_0[pulse_zero_selected_rel]
+        #pulse_zero_selected_idx = idx_0[pulse_zero_selected_rel]
+        
+        # zufälliges ziehen wegen rauschen etc
+        pulse_zero_selected_idx = np.random.choice(idx_0, size=n_per_class, replace=False)
 
 
         selected_indices = np.concatenate([pulse_zero_selected_idx, idx_1])
         np.random.shuffle(selected_indices)
 
         balanced_routing_targets = routing_targets[selected_indices]
+        read_order = np.argsort(selected_indices, kind="stable")
+        selected_indices = selected_indices[read_order]
+        balanced_routing_targets = balanced_routing_targets[read_order]
 
         #neuen X_train_dataloader bauen
         batch_size = pulse_dataloader.batch_size
         num_workers = pulse_dataloader.num_workers
         pin_memory = getattr(pulse_dataloader, "pin_memory", False)
+        persistent_workers = getattr(pulse_dataloader, "persistent_workers", False)
+        prefetch_factor = getattr(pulse_dataloader, "prefetch_factor", None)
         drop_last = getattr(pulse_dataloader, "drop_last", False)
 
         balanced_pulse_dataset = Subset(pulse_dataset, selected_indices)
@@ -704,6 +896,8 @@ class TorchRejectionEnsemble():
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            persistent_workers=persistent_workers and num_workers > 0,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
             drop_last=drop_last
         )
         print("targets after balancing. REJECT: ",np.count_nonzero(balanced_routing_targets == 1),"no REJECT: ",np.count_nonzero(balanced_routing_targets == 0))
@@ -717,6 +911,4 @@ class TorchRejectionEnsemble():
     
     def forward(self, x):
         return self.predict_proba(x)
-                
-                
-    
+

@@ -2,22 +2,13 @@ import math
 import numpy as np
 import torch
 
-try:
-    import plotly.graph_objects as go
-except ImportError:  # pragma: no cover - optional dependency
-    go = None
+import plotly.graph_objects as go
 
 
-def _require_plotly():
-    if go is None:
-        raise ImportError(
-            "Plotly is required for visualization helpers. Install plotly to enable these functions."
-        )
+
 
 def plot_snr_distributions(dataset, idx_0, idx_1, figsize=(10, 6), jitter=0.18, seed=0):
     """Boxplot SNR per subset + jitter scatter colored by pulse label (1/0) + NaN/count annotations."""
-
-    _require_plotly()
 
     rng = np.random.default_rng(seed)
 
@@ -75,7 +66,7 @@ def plot_snr_distributions(dataset, idx_0, idx_1, figsize=(10, 6), jitter=0.18, 
 
     fig = go.Figure()
 
-    # --- Boxplots (one per subset) ---
+    #  Boxplots
     for i, ((name, snr, pulse, nan_c, pulse_c, art_c), label) in enumerate(zip(group_data, labels)):
         fig.add_trace(
             go.Box(
@@ -317,8 +308,6 @@ def _extract_labels(dataset):
     
 def plot_snr_distributions(dataset, idx_0, idx_1, figsize=(10, 6)):
     """Plot SNR distributions for class-specific subsets and the full dataset."""
-
-    _require_plotly()
 
     def _snr_values(indices):
         values = []

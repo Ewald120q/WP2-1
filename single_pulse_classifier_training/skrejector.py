@@ -1,14 +1,14 @@
 import numpy as np
 import torch
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score
 import joblib
 from rejector import Rejector
 import math
 
 class SNRDT_Rejector(Rejector):
     def __init__(self, device, max_depth=1, min_samples_leaf=200, random_state=0,
-                 use_abs_peak=False, snr_db=False):
+                 use_abs_peak=False, snr_db=False, use_meta_snr=False):
         super().__init__(model=None, device=device)
         self.device = device
 
@@ -20,6 +20,7 @@ class SNRDT_Rejector(Rejector):
 
         self.use_abs_peak = use_abs_peak
         self.snr_db = snr_db
+        self.use_meta_snr = use_meta_snr
 
     def prepare_inputs(self, batch, features):
         """Override base hook to tell the ensemble we need raw batches."""
@@ -55,22 +56,30 @@ class SNRDT_Rejector(Rejector):
             x = x.unsqueeze(1)  # (B,1,H,W)
         approx_snr = self.approximate_SNR(x, use_abs_peak=self.use_abs_peak, snr_db=self.snr_db)
         
+        if self.use_meta_snr and "metadata" in batch:
+            # metadata shape: (B, 5) -> Index 0 ist SNR
+            meta_snr = batch["metadata"][:, 0].to(self.device)
+            # Maske für NaNs, unendliche Werte oder -1 erstellen (ungültige SNR-Werte)
+            fallback_mask = torch.isnan(meta_snr) | torch.isinf(meta_snr) | (meta_snr == -1)
+            # Falls ungültig, nimm `approx_snr`, ansonsten `meta_snr`
+            return torch.where(fallback_mask, approx_snr, meta_snr)
+            
         return approx_snr
 
     def fit(self, pulse_X_train_dataloader, routing_targets_train,
-            pulse_X_test_dataloader=None, routing_targets_test=None):
+            pulse_X_test_dataloader=None, routing_targets_test=None, **kwargs):
         X_list, y_list = [], []
         idx = 0
 
         if not hasattr(pulse_X_train_dataloader, "shuffle"):
-            pass  # DataLoader hat kein direktes shuffle-Attribut; du musst selbst sicherstellen: shuffle=False
+            pass
 
         with torch.no_grad():
             for batch in pulse_X_train_dataloader:
                 snr = self._snr_from_batch_dm_time(batch)  # (B,)
                 bsz = snr.shape[0]
 
-                # Targets passend zur Loader-Reihenfolge slicen
+                # targets passend zur Loader-Reihenfolge slicen
                 if torch.is_tensor(routing_targets_train):
                     yb = routing_targets_train[idx:idx+bsz].detach().cpu().numpy()
                 else:
@@ -83,19 +92,36 @@ class SNRDT_Rejector(Rejector):
         X = np.concatenate(X_list, axis=0).reshape(-1, 1)  # (N,1)
         y = np.concatenate(y_list, axis=0).astype(int)
         
-        class_weight = {0: 1.0, 1: 49.0}  # 98% vs. 2%
-        sample_weight = np.vectorize(class_weight.get)(y)
+        #class_weight = {0: 1.0, 1: 49.0}  # 98% vs. 2%
+        #sample_weight = np.vectorize(class_weight.get)(y)
 
-        self.tree.fit(X, y, sample_weight=sample_weight)
+        self.tree.fit(X, y)
 
         y_pred = self.tree.predict(X)
         train_acc = self.tree.score(X, y)
         train_cm = confusion_matrix(y, y_pred)
-        train_f1 = f1_score(y, y_pred, average="binary")
+        train_f1 = f1_score(y, y_pred, average="binary", zero_division=0)
+        train_precision = precision_score(y, y_pred, average="binary", zero_division=0)
+        train_recall = recall_score(y, y_pred, average="binary", zero_division=0)
 
         print(f"Train accuracy: {train_acc:.4f} (X: SNR; Y: routing labels)")
         print("Train confusion matrix:\n", train_cm)
         print(f"Train F1 score: {train_f1:.4f}")
+
+        if kwargs.get("writer") is not None:
+            writer = kwargs["writer"]
+            writer.add_scalars('Accuracy', {'train': train_acc}, 1)
+            writer.add_scalars('Precision', {'train': train_precision}, 1)
+            writer.add_scalars('Recall', {'train': train_recall}, 1)
+            writer.add_scalars('F1_score', {'train': train_f1}, 1)
+
+        if pulse_X_test_dataloader is not None and routing_targets_test is not None:
+            val_acc, val_f1, val_prec, val_rec = self.evaluate_rejector_with_metrics(pulse_X_test_dataloader, routing_targets_test)
+            if kwargs.get("writer") is not None:
+                writer.add_scalars('Accuracy', {'val': val_acc}, 1)
+                writer.add_scalars('Precision', {'val': val_prec}, 1)
+                writer.add_scalars('Recall', {'val': val_rec}, 1)
+                writer.add_scalars('F1_score', {'val': val_f1}, 1)
 
         # threshhold ausgeben
         if self.tree.tree_.node_count >= 1 and self.tree.max_depth == 1:
@@ -107,7 +133,45 @@ class SNRDT_Rejector(Rejector):
 
         return self
     
-    def eval(self, pulse_X_train_dataloader, routing_targets_train,
+    def evaluate_rejector_with_metrics(self, dataloader, targets):
+        X_list, y_list = [], []
+        idx = 0
+        with torch.no_grad():
+            for batch in dataloader:
+                snr = self._snr_from_batch_dm_time(batch)
+                bsz = snr.shape[0]
+                if torch.is_tensor(targets):
+                    yb = targets[idx:idx+bsz].detach().cpu().numpy()
+                else:
+                    yb = np.asarray(targets[idx:idx+bsz])
+                X_list.append(snr.detach().cpu().numpy())
+                y_list.append(yb)
+                idx += bsz
+        X = np.concatenate(X_list, axis=0).reshape(-1, 1)
+        y = np.concatenate(y_list, axis=0).astype(int)
+
+        y_pred = self.tree.predict(X)
+        val_acc = self.tree.score(X, y)
+        val_cm = confusion_matrix(y, y_pred)
+        val_prec = precision_score(y, y_pred, average="binary", zero_division=0)
+        val_rec = recall_score(y, y_pred, average="binary", zero_division=0)
+        val_f1 = f1_score(y, y_pred, average="binary", zero_division=0)
+
+        print(f"Val accuracy: {val_acc:.4f} (X: SNR; Y: routing labels)")
+        print("Val confusion matrix:\n", val_cm)
+        print(f"Val F1 score: {val_f1:.4f}")
+
+        return val_acc, val_f1, val_prec, val_rec
+        Y = np.concatenate(y_list, axis=0).astype(int)
+        
+        y_pred = self.tree.predict(X)
+        acc = self.tree.score(X, Y)
+        f1 = f1_score(Y, y_pred, average="binary", zero_division=0)
+        prec = precision_score(Y, y_pred, average="binary", zero_division=0)
+        rec = recall_score(Y, y_pred, average="binary", zero_division=0)
+        return acc, f1, prec, rec
+
+    def evaluate_rejector(self, pulse_X_train_dataloader, routing_targets_train,
             pulse_X_test_dataloader=None, routing_targets_test=None):
         X_list, y_list = [], []
         idx = 0
@@ -115,7 +179,7 @@ class SNRDT_Rejector(Rejector):
         print("generate SNR labels for test data") 
 
         if not hasattr(pulse_X_test_dataloader, "shuffle"):
-            pass  # DataLoader hat kein direktes shuffle-Attribut; du musst selbst sicherstellen: shuffle=False
+            pass
 
         with torch.no_grad():
             for batch in pulse_X_test_dataloader:
@@ -161,7 +225,12 @@ class SNRDT_Rejector(Rejector):
 
     def save(self, path):
         joblib.dump(
-            {"tree": self.tree, "use_abs_peak": self.use_abs_peak, "snr_db": self.snr_db},
+            {
+                "tree": self.tree, 
+                "use_abs_peak": self.use_abs_peak, 
+                "snr_db": self.snr_db,
+                "use_meta_snr": self.use_meta_snr
+            },
             path
         )
 
@@ -170,4 +239,5 @@ class SNRDT_Rejector(Rejector):
         self.tree = obj["tree"]
         self.use_abs_peak = obj.get("use_abs_peak", False)
         self.snr_db = obj.get("snr_db", False)
+        self.use_meta_snr = obj.get("use_meta_snr", False)
         return self

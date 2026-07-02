@@ -90,23 +90,23 @@ def plot_accuracies(history, resolution, model_name, writer, config, test_acc, w
     plt.subplot(1, 2, 1)
     plt.plot(history['train_loss'])
     plt.plot(history['val_loss'])
-    plt.plot(history['test_loss'])
+    #plt.plot(history['test_loss'])
     plt.title(f'Model Loss: {resolution}x{resolution}')
     plt.ylabel('Loss')
     plt.xlabel('Epoch')
     plt.grid(True, ls='--')
-    plt.legend(['Train', 'Validation', 'Test'], loc='upper right')
+    plt.legend(['Train', 'Validation'], loc='upper right')
 
     # Accuracy plot
     plt.subplot(1, 2, 2)
     plt.plot(history['train_accuracy'])
     plt.plot(history['val_accuracy'])
-    plt.plot(history['test_accuracy'])
+    #plt.plot(history['test_accuracy'])
     plt.title(f'Model Accuracy: {resolution}x{resolution}')
     plt.ylabel('Accuracy')
     plt.xlabel('Epoch')
     plt.grid(True, ls='--')
-    plt.legend(['Train', 'Validation', 'Test'], loc='lower right')
+    plt.legend(['Train', 'Validation'], loc='lower right')
 
     # Add a common title
     plt.suptitle(f'Model {model_name} performance for {resolution}x{resolution} resolution', fontsize=16)

@@ -56,8 +56,10 @@ class DMTimeDataSetCreator:
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(os.path.join(self.dm_time_shard_dir, "train"), exist_ok=True)
         os.makedirs(os.path.join(self.dm_time_shard_dir, "test"), exist_ok=True)
+        os.makedirs(os.path.join(self.dm_time_shard_dir, "val"), exist_ok=True)
         os.makedirs(os.path.join(self.freq_time_shard_dir, "train"), exist_ok=True)
         os.makedirs(os.path.join(self.freq_time_shard_dir, "test"), exist_ok=True)
+        os.makedirs(os.path.join(self.freq_time_shard_dir, "val"), exist_ok=True)
 
         # Prepare file list and DMs
         self.file_list, self.dm_list = self._prepare_file_list_and_dm()
@@ -231,8 +233,18 @@ class DMTimeDataSetCreator:
             target_count (int, optional): Target number of samples for 'rest of events'.
 
         Returns:
-            tuple: Dataset array and metadata array shaped (N, 3) with columns ('snr', 't_min', 't_max', 'DM').
+            tuple: Dataset array and metadata array shaped (N, 5) with columns ('snr', 't_min', 't_max', 'DM', ['rest of events', pulse', zero DM events]).
         """
+        # Encode label text to float so NumPy doesn't crash
+        if label == 'pulses':
+            num_label = 1.0
+        elif label == 'zero DM events':
+            num_label = 0.0
+        elif label == 'rest of events':
+            num_label = -1.0
+        else:
+            return ValueError(f"label {label} not supported")
+
         if label == 'rest of events':
             # Ensure target count is provided
             if target_count is None:
@@ -240,7 +252,7 @@ class DMTimeDataSetCreator:
     
             # Initialize dataset with the target count
             dataset = np.empty([math.floor(target_count/self.ntsamples),self.ntsamples, len(self.dm_list), 256], dtype=np.uint8)
-            metadata = np.empty((math.floor(target_count/self.ntsamples),self.ntsamples, 4), dtype=np.float64) # SNR, t_min, t_max, DM per sample
+            metadata = np.empty((math.floor(target_count/self.ntsamples),self.ntsamples, 5), dtype=np.float64) # SNR, t_min, t_max, DM, label per sample
             target_count = math.floor(target_count/self.ntsamples) * self.ntsamples
             
             global_index : int = 0 # make sure division is int
@@ -263,7 +275,7 @@ class DMTimeDataSetCreator:
                         )
                         #scan_snr = self._get_scansnr(self.dm_time_image[:, slice_start:slice_end][::-1])
                         dm = self._getDM(position)
-                        metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (np.nan, t_min, t_max, dm)
+                        metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (np.nan, t_min, t_max, dm, num_label)
                         global_index += 1
                         pbar.update(1)  # Update progress bar
                 
@@ -271,7 +283,7 @@ class DMTimeDataSetCreator:
         else:
             # Process pulses or zero DM events
             dataset = np.empty([candidates.shape[0], self.ntsamples, len(self.dm_list), 256], dtype=np.uint8)
-            metadata = np.empty((candidates.shape[0], self.ntsamples, 4), dtype=np.float64)
+            metadata = np.empty((candidates.shape[0], self.ntsamples, 5), dtype=np.float64)
             global_index = 0
     
             for idx, row in tqdm(candidates.iterrows(), total=candidates.shape[0], desc=f'Processing {label}'):
@@ -287,7 +299,7 @@ class DMTimeDataSetCreator:
                     dataset[global_index // self.ntsamples, global_index % self.ntsamples] = self.normalize_image_to_255(
                         self.dm_time_image[:, slice_start:slice_end][::-1]
                     )
-                    metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (float(row['snr']), t_min, t_max, float(row['dm']))
+                    metadata[global_index // self.ntsamples, global_index % self.ntsamples] = (float(row['snr']), t_min, t_max, float(row['dm']), num_label)
                     global_index += 1
     
             return dataset, metadata
@@ -336,7 +348,7 @@ class DMTimeDataSetCreator:
         return exclude_positions
 
 
-    def process(self, train_ratio, shuffle=True, shuffle_seed=None):
+    def process(self, train_ratio, val_ratio, shuffle=True, shuffle_seed=None):
         """
         Main function to process candidates and create the DM-Time dataset.
 
@@ -356,6 +368,9 @@ class DMTimeDataSetCreator:
         """
         if train_ratio < 0 or train_ratio >1:
             return ValueError("train_ratio is not between 0 and 1")
+        print(f"current ratio: train = {train_ratio}; val = {val_ratio}; test = {1-train_ratio-val_ratio}")
+        if 1-train_ratio-val_ratio <= 0:
+            return ValueError(f"Fix your dataset ratios!")
         # Load candidates
         column_names = ['beam_name', 'nn', 'mjd', 'dm', 'width', 'snr', 'fh', 'fl', 'image_name', 'x', 'name_file']
         candidats = pd.read_csv(self.transient_x_cands_path, sep='\t', names=column_names, dtype=str)
@@ -403,39 +418,55 @@ class DMTimeDataSetCreator:
         else:
             print("Warning: dataset is not shuffled before sharding. Pass shuffle=True to randomize order of pulses.")
             
-        #seperating into training and test,
+        #seperating into training, val and test,
         # so that we can turn back data shape from (N, ntsamples, dm_length, 256) back to (N * ntsamples, dm_length, 256), which we need for sharding 
         
         data_len = len(data)
-        data_train = data[:math.floor(train_ratio * data_len)].reshape(-1, len(self.dm_list), 256)
-        data_test = data[math.floor(train_ratio * data_len):].reshape(-1, len(self.dm_list), 256)
-        metadata_train = metadata[:math.floor(train_ratio * data_len)].reshape(-1, 4)
-        metadata_test = metadata[math.floor(train_ratio * data_len):].reshape(-1, 4)
-        labels_train = labels[:math.floor(train_ratio * data_len)].reshape(-1)
-        labels_test = labels[math.floor(train_ratio * data_len):].reshape(-1)
-        
+        train_end = math.floor(train_ratio * data_len)
+        val_end = train_end + math.floor(val_ratio * data_len)
+
+        data_train = data[:train_end].reshape(-1, len(self.dm_list), 256)
+        data_val = data[train_end:val_end].reshape(-1, len(self.dm_list), 256)
+        data_test = data[val_end:].reshape(-1, len(self.dm_list), 256)
+
+        metadata_train = metadata[:train_end].reshape(-1, 5)
+        metadata_val = metadata[train_end:val_end].reshape(-1, 5)
+        metadata_test = metadata[val_end:].reshape(-1, 5)
+
+        labels_train = labels[:train_end].reshape(-1)
+        labels_val = labels[train_end:val_end].reshape(-1)
+        labels_test = labels[val_end:].reshape(-1)
+                
         
         if shuffle:
             print("shuffling inside train and test before sharding, so that data more evenly distributed")
             self._shuffle_in_unison([data_train, metadata_train, labels_train], seed=shuffle_seed)
+            self._shuffle_in_unison([data_val, metadata_val, labels_val], seed=shuffle_seed)
             self._shuffle_in_unison([data_test, metadata_test, labels_test], seed=shuffle_seed)
         
         print("data_train.shape: ", data_train.shape)
+        print("data_val.shape: ", data_val.shape)
         print("data_test.shape: ", data_test.shape)
         print("metadata_train.shape: ", metadata_train.shape)
+        print("metadata_val.shape: ", metadata_val.shape)
         print("metadata_test.shape: ", metadata_test.shape)
         print("labels_train.shape: ", labels_train.shape)
+        print("labels_val.shape: ", labels_val.shape)
         print("labels_test.shape: ", labels_test.shape)
         
         
         # Save DM-time dataset shards
         self._save_dm_time_shards(data_train, "train")
+        self._save_dm_time_shards(data_val, "val")
         self._save_dm_time_shards(data_test, "test")
         del data
         del data_train
         del data_test
+        del data_val
         np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels_train.npy'), labels_train)
         np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata_train.npy'), metadata_train)
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels_val.npy'), labels_val)
+        np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata_val.npy'), metadata_val)
         np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_labels_test.npy'), labels_test)
         np.save(os.path.join(self.output_dir, f'{self.name_of_set}_DM_time_dataset_realbased_metadata_test.npy'), metadata_test)
 
@@ -483,9 +514,9 @@ class DMTimeDataSetCreator:
         
         print(metadata.shape)
 
-        if metadata.ndim != 2 or metadata.shape[1] < 4:
+        if metadata.ndim != 2 or metadata.shape[1] < 5:
             raise ValueError(
-                "Expected metadata with shape (N, 4) where columns are (snr, t_min, t_max, DM)."
+                "Expected metadata with shape (N, 5) where columns are (snr, t_min, t_max, DM, label)."
             )
         if labels.shape[0] != metadata.shape[0]:
             raise ValueError(
@@ -603,9 +634,9 @@ class DMTimeDataSetCreator:
 
         metadata = np.load(metadata_path)
 
-        if metadata.ndim != 2 or metadata.shape[1] < 4:
+        if metadata.ndim != 2 or metadata.shape[1] < 5:
             raise ValueError(
-                "Expected metadata with shape (N, 4) where columns are (snr, t_min, t_max, DM)."
+                "Expected metadata with shape (N, 5) where columns are (snr, t_min, t_max, DM, label)."
             )
 
         hdr = self.filterbank_file.your_header
@@ -656,7 +687,7 @@ class DMTimeDataSetCreator:
                 )
 
                 for local_idx, idx in enumerate(range(shard_start, shard_end)):
-                    snr, t_min, t_max, dm = metadata[idx]
+                    snr, t_min, t_max, dm, label_num = metadata[idx]
 
                     # müssen Zeitfenster padden und anpassen, weil wir Punkte aus der "Zukunft" um negative Zeit verschieben
                     t_center = 0.5 * (t_min + t_max)

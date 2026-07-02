@@ -1,5 +1,6 @@
 import json
 import os
+import bisect
 import torch
 import numpy as np
 
@@ -33,19 +34,20 @@ class ShardIndex:
         self.root_dir = root_dir
         self.entries = manifest["shards"]
         self.total = manifest["total_samples"]
+        self.starts = [entry["start_sample"] for entry in self.entries]
+        self.ends = [entry["end_sample"] for entry in self.entries]
+        self.paths = [os.path.join(self.root_dir, entry["path"]) for entry in self.entries]
 
     def locate(self, global_idx):
-        for entry in self.entries:
-            if entry["start_sample"] <= global_idx < entry["end_sample"]:
-                local = global_idx - entry["start_sample"]
-                path = os.path.join(self.root_dir, entry["path"])
-                return path, local
+        shard_pos = bisect.bisect_right(self.starts, global_idx) - 1
+        if shard_pos >= 0 and global_idx < self.ends[shard_pos]:
+            return self.paths[shard_pos], global_idx - self.starts[shard_pos]
         raise IndexError(global_idx)
     
 class DMTimeShardDataset(torch.utils.data.Dataset):
     def __init__(self, cfg, use_freq_time=False, dtype=torch.float32, split="train"):
-        if split not in {"train", "test"}:
-            raise ValueError(f"Unsupported split '{split}'. Expected 'train' or 'test'.")
+        if split not in {"train", "test", "val"}:
+            raise ValueError(f"Unsupported split '{split}'. Expected 'train', 'val' or 'test'.")
 
         # Persist configuration metadata so downstream tooling can recreate matching datasets
         self.cfg = dict(cfg)

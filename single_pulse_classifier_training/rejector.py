@@ -37,45 +37,56 @@ class Rejector(nn.Module):
         return features
         
     #targets 0 = f_small; 1 = f_big
-    def fit(self, pulse_X_train_dataloader, routing_targets_train, pulse_X_test_dataloader, routing_targets_test):
+    def fit(self, pulse_X_train_dataloader, routing_targets_train, pulse_X_test_dataloader, routing_targets_test, lr=0.000001, weight_decay=0.0001, num_epochs=100, patience=15, writer=None, run_name="rejector_test"):
         
-        #train_loader = DataLoader(zip(X_train, targets_train), batch_size= 256, shuffle=False, num_workers=8)
-        #test_loader = DataLoader(zip(X_test, targets_test), batch_size= 256, shuffle=False, num_workers=8)
+        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         
-        optimizer = optim.Adam(self.model.parameters(), lr=0.0001, weight_decay=0.0001)
-        num_epochs = 100
-        
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=4)
-        criterion = nn.CrossEntropyLoss()
-        
-        tensorboard_cfg = {
-        "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid_08_01_01/",
-        "experiment_name": "rejector-DM_time_binary_classificator_241002_3_dropout_fsasrejector",
-        "run_name": "lr0.0001_wd0.0001"
-        }
-        
-        writer = SummaryWriter(log_dir=tensorboard_cfg["log_root"])
-        #writer.add_text("run/config", json.dumps(config, indent=2), 0)
-        #writer.add_text("run/experiment", experiment_component, 0)
-        #writer.add_text("run/name", run_component, 0)
-        
-        history, best_test_acc, best_epoch, final_test_acc, wrong_examples, wrong_labels = training._train(
-        self.model,
-        "rejector_test",
-        pulse_X_train_dataloader,
-        pulse_X_test_dataloader,
-        optimizer,
-        num_epochs,
-        val_dataloader=None,
-        criterion=criterion,
-        scheduler=scheduler,
-        writer=writer,
-        device="cuda",
-        patience=num_epochs,
-        checkpoint_dir="./rejector_checkpoints",
-        targets_train = routing_targets_train,
-        targets_test = routing_targets_test
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=5,
+            threshold=1e-4,
+            min_lr=1e-7,
+            verbose=True,
         )
+        
+        n0 = (routing_targets_train == 0).sum()
+        n1 = (routing_targets_train == 1).sum()
+        
+        w0 = 1.0
+        w1 = n0 / max(n1, 1)
+        class_weights = torch.tensor([w0, w1], device=self.device, dtype=torch.float32)
+        
+        criterion = nn.CrossEntropyLoss(weight = class_weights)
+        
+        if writer is None:
+            tensorboard_cfg = {
+            "log_root": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/tensorboard_runs_grid_08_01_01/",
+            "experiment_name": "rejector-DM_time_binary_classificator_241002_3_dropout_fsembeddingmlp",
+            "run_name": run_name
+            }
+            
+            writer = SummaryWriter(log_dir=tensorboard_cfg["log_root"])
+            
+        history, best_val_acc, best_epoch = training._train(
+            self.model,
+            run_name,
+            pulse_X_train_dataloader,
+            pulse_X_test_dataloader,
+            optimizer,
+            num_epochs,
+            criterion=criterion,
+            scheduler=scheduler,
+            writer=writer,
+            device=self.device,
+            patience=patience,
+            checkpoint_dir="./rejector_checkpoints",
+            targets_train=routing_targets_train,
+            targets_val=routing_targets_test,
+        )
+
+        return history, best_val_acc, best_epoch
         
     def predict_proba(self, x):
         return self.model.classifier(x)
@@ -86,4 +97,45 @@ class Rejector(nn.Module):
     def load(self, path):
         self.model.load_state_dict(torch.load(path, weights_only=True))
         
+class SmallToEmbedding(nn.Module):
+    def __init__(self, f_small: nn.Module, feature_source="classifier_features"):
+        super().__init__()
+        self.f_small = f_small
+        self.feature_source = feature_source
+        self.f_small.eval()
+
+        if feature_source not in {"classifier_features", "pooled_features"}:
+            raise ValueError(
+                f"Unknown feature_source '{feature_source}'. "
+                "Use 'classifier_features' or 'pooled_features'."
+            )
+
+    def forward(self, batch):
+        with torch.no_grad():
+            x = self.f_small._prepare_input(batch)
+            if self.feature_source == "pooled_features":
+                return self.f_small.pooled_features(x)
+            return self.f_small.classifier_features(x)
+
+class EmbeddingRejector(Rejector):
     
+    def __init__(self, f_small, embedding_processing, device, feature_source="classifier_features"):
+        super(Rejector, self).__init__()
+        
+        self.device = device
+        self.f_small = f_small
+        self.f_small.eval()
+        for p in self.f_small.parameters():
+            p.requires_grad = False
+        self.embedding_processing = embedding_processing
+        self.feature_source = feature_source
+        
+        self.model = nn.Sequential(SmallToEmbedding(self.f_small, feature_source), self.embedding_processing)
+        self.model.to(device)
+        
+    def predict_proba(self, x):
+        return self.model(x)
+    
+    def prepare_inputs(self, batch, features):
+        """EmbeddingRejector directly consumes the original batch."""
+        return batch
