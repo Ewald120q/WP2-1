@@ -6,7 +6,7 @@
     256,
     256
   ],
-  "total_samples": 1550080,
+  "total_samples": 1377792,
   "max_shard_size_bytes": 21474836480,
   "shards": [
     {
@@ -41,8 +41,8 @@
       "index": 4,
       "path": "B0531+21_59000_48386_DM_time_dataset_realbased_shard_0004.npy",
       "start_sample": 1310720,
-      "end_sample": 1550080,
-      "rows": 239360
+      "end_sample": 1377792,
+      "rows": 67072
     }
   ]
 }
