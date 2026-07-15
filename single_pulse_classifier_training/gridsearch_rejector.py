@@ -99,15 +99,15 @@ _config = {
     "f_big_weights": "/cephfs/users/oleksjuk/MA/WP2-1/single_pulse_classifier_training/final_checkpoints/finetune_checkpoints/prot-DM_time_binary_classificator_resnet18_finetune-010-0.999-0.993.pth",
     
     #no finetune
-    # "splits_path": "./new_balanced_dm_time_splits_cascaded_r1.pth",
-    #"splits_path": "./new_balanced_dm_time_splits_cascaded_r2_r1filtered.pth",
-    #"unbalanced_splits_path": "./new_unbalanced_dm_time_splits_cascaded_r2_r1filtered.pth",
+    # "splits_path": "./artifacts/splits/new_balanced_dm_time_splits_cascaded_r1.pth",
+    #"splits_path": "./artifacts/splits/new_balanced_dm_time_splits_cascaded_r2_r1filtered.pth",
+    #"unbalanced_splits_path": "./artifacts/splits/new_unbalanced_dm_time_splits_cascaded_r2_r1filtered.pth",
     
     #finetune
-    # "splits_path": "./new_balanced_dm_time_splits_cascaded_r1_FINETUNE.pth",
-    # "unbalanced_splits_path": "./new_unbalanced_dm_time_splits_cascaded_r1_r1filtered_FINETUNE.pth",
-    "splits_path": "./new_balanced_dm_time_splits_cascaded_r2_r1filtered_FINETUNE.pth",
-    "unbalanced_splits_path": "./new_unbalanced_dm_time_splits_cascaded_r2_r1filtered_FINETUNE.pth",
+    # "splits_path": "./artifacts/splits/new_balanced_dm_time_splits_cascaded_r1_FINETUNE.pth",
+    # "unbalanced_splits_path": "./artifacts/splits/new_unbalanced_dm_time_splits_cascaded_r1_r1filtered_FINETUNE.pth",
+    "splits_path": "./artifacts/splits/new_balanced_dm_time_splits_cascaded_r2_r1filtered_FINETUNE.pth",
+    "unbalanced_splits_path": "./artifacts/splits/new_unbalanced_dm_time_splits_cascaded_r2_r1filtered_FINETUNE.pth",
     
     # Which stage targets/splits to create when splits_path doesn't exist.
     # - "r1": old behavior (small->mid) using prepare_fit + _splitTrainData
