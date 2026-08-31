@@ -21,7 +21,8 @@ from DMTimeShardDataset import *
 
 def _train(model, model_name, train_dataloader, val_dataloader, optimizer, num_epochs,
            *, criterion=None, scheduler=None, writer=None,
-           device=None, patience=None, checkpoint_dir=None, targets_train=None, targets_val=None):
+           device=None, patience=None, checkpoint_dir=None, targets_train=None,
+           targets_val=None, scheduler_monitor=None):
     device = device or next(model.parameters()).device
     criterion = criterion or nn.CrossEntropyLoss()
     patience = patience if patience is not None else num_epochs
@@ -114,8 +115,16 @@ def _train(model, model_name, train_dataloader, val_dataloader, optimizer, num_e
 
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                monitor_loss = val_loss if val_loss is not None else train_loss
-                scheduler.step(monitor_loss)
+                monitor_name = (scheduler_monitor or "val_loss").lower()
+                if monitor_name in {"val_accuracy", "val_acc", "accuracy"}:
+                    monitor_metric = val_acc if val_acc is not None else train_acc
+                elif monitor_name in {"train_accuracy", "train_acc"}:
+                    monitor_metric = train_acc
+                elif monitor_name in {"train_loss", "loss"}:
+                    monitor_metric = train_loss
+                else:
+                    monitor_metric = val_loss if val_loss is not None else train_loss
+                scheduler.step(monitor_metric)
             else:
                 scheduler.step()
 
@@ -382,8 +391,25 @@ def train(config):
     
     # Setup optimizer and loss function
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=4)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    scheduler_name = str(config.get("scheduler", "exponential")).lower()
+    if scheduler_name in {"none", "off", "disabled"}:
+        scheduler = None
+    elif scheduler_name in {"reduce_on_plateau", "reducelronplateau"}:
+        scheduler_monitor = config.get("scheduler_monitor", "val_loss")
+        default_mode = "max" if str(scheduler_monitor).lower() in {"val_accuracy", "val_acc", "accuracy"} else "min"
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=config.get("scheduler_mode", default_mode),
+            factor=config.get("scheduler_factor", 0.5),
+            patience=int(config.get("scheduler_patience", 10)),
+        )
+    elif scheduler_name == "exponential":
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=config.get("scheduler_gamma", 0.95),
+        )
+    else:
+        raise ValueError(f"Unsupported scheduler: {scheduler_name}")
     criterion = nn.CrossEntropyLoss()
 
     history, best_val_acc, best_epoch = _train(
@@ -399,6 +425,7 @@ def train(config):
         device=device,
         patience=config.get("patience"),
         checkpoint_dir=checkpoint_dir,
+        scheduler_monitor=config.get("scheduler_monitor"),
     )
 
     # Evaluate test dataset at the very end

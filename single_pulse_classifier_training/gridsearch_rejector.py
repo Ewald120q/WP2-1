@@ -1,4 +1,5 @@
 import os
+import json
 import torch
 import numpy as np
 import random
@@ -72,6 +73,9 @@ def print_runtime_diagnostics(config):
 parser = argparse.ArgumentParser(description="Rejector Random Search Worker")
 parser.add_argument("--worker_id", type=int, help="Eindeutige ID für diesen Container")
 parser.add_argument("--rejector_type", type=str, choices=["standard", "embedding", "snrdt", "random"], help="Art des Rejectors, der trainiert werden soll.")
+parser.add_argument("--config", type=str, default=None, help="Optionale JSON-Datei, die _config ueberschreibt.")
+parser.add_argument("--num_trials", type=int, default=None, help="Ueberschreibt config['num_trials'].")
+parser.add_argument("--embedding_model", type=str, default=None, help="Ueberschreibt config['embedding_model_choices'] mit genau diesem Modell.")
 args = parser.parse_args()
 #/raid/outputs
 #/cephfs/users/oleksjuk/MA/WP2-1/DM_time_dataset_creator/outputs
@@ -131,6 +135,19 @@ _config = {
     "device": "cuda" if torch.cuda.is_available() else "cpu"
 }
 
+
+if args.config is not None:
+    with open(args.config, "r", encoding="utf-8") as handle:
+        file_config = json.load(handle)
+    _config.update(file_config)
+
+if args.num_trials is not None:
+    _config["num_trials"] = args.num_trials
+
+if args.embedding_model is not None:
+    _config["embedding_model_choices"] = [args.embedding_model]
+
+_config["device"] = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 
@@ -523,8 +540,13 @@ if __name__ == "__main__":
         ensemble.rejector = rejector # Swap rejector in the ensemble
 
         # Setting up Tensorboard Writer
-        run_name = build_run_name(r_type, trial_config, args.worker_id, trial, 
-                                  routing_stage=_config.get("routing_stage", "r1"))
+        run_name = build_run_name(
+            r_type,
+            trial_config,
+            args.worker_id,
+            trial,
+            routing_stage=_config.get("run_name_stage", _config.get("routing_stage", "r1")),
+        )
         log_dir_parts = [_config["tensorboard_root"], r_type]
         if r_type == "embedding":
             log_dir_parts.append(embedding_model)

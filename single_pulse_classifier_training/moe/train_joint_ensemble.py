@@ -24,12 +24,12 @@ if __package__ in {None, ""}:
     from moe.checkpoints import load_expert_checkpoint, load_rejector_checkpoint
     from moe.joint_ensemble import JointCascadeMoE
     from moe.loss import CascadeMoELoss
-    from moe.train_helper import evaluate_hard, evaluate_soft, fit
+    from moe.train_helper import evaluate_hard, evaluate_soft, evaluate_topk, fit
 else:
     from .checkpoints import load_expert_checkpoint, load_rejector_checkpoint
     from .joint_ensemble import JointCascadeMoE
     from .loss import CascadeMoELoss
-    from .train_helper import evaluate_hard, evaluate_soft, fit
+    from .train_helper import evaluate_hard, evaluate_soft, evaluate_topk, fit
 
 from DMTimeShardDataset import DMTimeShardDataset
 from embedding_processing_models import build_embedding_processing
@@ -110,10 +110,7 @@ def _build_rejector(
     return rejector, spec.get("feature_source", default_feature_source)
 
 
-def build_joint_model(
-    config: dict[str, Any],
-    device: torch.device,
-) -> JointCascadeMoE:
+def build_joint_model(config: dict[str, Any],device: torch.device) -> JointCascadeMoE:
     model_config = config["model"]
     f_small = _build_expert(model_config["f_small"], device=device)
     f_mid = _build_expert(model_config["f_mid"], device=device)
@@ -141,6 +138,7 @@ def build_joint_model(
         r1_feature_source=source_r1,
         r2_feature_source=source_r2,
         temperature=model_config.get("temperature", 1.0),
+        expert_fractions=model_config.get("expert_fractions"),
     ).to(device)
 
 
@@ -193,10 +191,7 @@ def build_loaders(
     )
 
 
-def build_optimizer(
-    model: JointCascadeMoE,
-    config: dict[str, Any],
-) -> torch.optim.Optimizer:
+def build_optimizer( model: JointCascadeMoE, config: dict[str, Any]) -> torch.optim.Optimizer:
     training_config = config["training"]
     expert_parameters = itertools.chain(
         model.f_small.parameters(),
@@ -232,12 +227,38 @@ def build_optimizer(
 
 
 def build_loss(config: dict[str, Any], device: torch.device) -> CascadeMoELoss:
-    loss_config = config["loss"]
-    return CascadeMoELoss(
-        lambda_cost=loss_config["lambda_cost"],
-        alpha_experts=loss_config["alpha_experts"],
-        expert_costs=loss_config["expert_costs"],
-    ).to(device)
+    fractions = config.get("model", {}).get("expert_fractions", {"small": 0.7, "mid": 0.21, "large": 0.09})
+    target_usage = torch.tensor([fractions["small"], fractions["mid"], fractions["large"]], dtype=torch.float32, device=device)
+    return CascadeMoELoss(target_usage=target_usage).to(device)
+
+
+def build_scheduler(optimizer: torch.optim.Optimizer,training_config: dict[str, Any]) -> torch.optim.lr_scheduler.LRScheduler | torch.optim.lr_scheduler.ReduceLROnPlateau | None:
+    scheduler_name = training_config.get("scheduler")
+    gamma = training_config.get("scheduler_gamma")
+    if scheduler_name is None:
+        scheduler_name = "exponential" if gamma is not None else "none"
+
+    scheduler_name = scheduler_name.lower()
+    if scheduler_name in {"none", "off", "disabled"}:
+        return None
+    if scheduler_name == "exponential":
+        if gamma is None:
+            raise ValueError("scheduler_gamma must be set for the exponential scheduler.")
+        return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    if scheduler_name in {"reduce_on_plateau", "reducelronplateau"}:
+        scheduler_mode = training_config.get(
+            "scheduler_mode",
+            training_config.get("selection_mode", "min"),
+        )
+        scheduler_mode = str(scheduler_mode).lower()
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_mode,
+            factor=training_config.get("scheduler_factor", 0.5),
+            patience=int(training_config.get("scheduler_patience", 15)),
+        )
+
+    raise ValueError(f"Unsupported scheduler: {scheduler_name}")
 
 
 def run_training(config: dict[str, Any]) -> dict[str, Any]:
@@ -258,12 +279,7 @@ def run_training(config: dict[str, Any]) -> dict[str, Any]:
     optimizer = build_optimizer(model, config)
 
     training_config = config["training"]
-    gamma = training_config.get("scheduler_gamma")
-    scheduler = (
-        torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-        if gamma is not None
-        else None
-    )
+    scheduler = build_scheduler(optimizer, training_config)
 
     output_dir = config.get("output_dir", "./moe_runs/default")
     os.makedirs(output_dir, exist_ok=True)
@@ -297,6 +313,19 @@ def run_training(config: dict[str, Any]) -> dict[str, Any]:
             patience=training_config.get("patience"),
             gradient_clip_norm=training_config.get("gradient_clip_norm"),
             selection_metric=training_config.get("selection_metric", "total"),
+            selection_mode=training_config.get("selection_mode", "min"),
+            topk_noise_std=training_config.get("topk_noise_std", 0.0),
+            topk_noise_start_epoch=training_config.get("topk_noise_start_epoch", 0),
+            topk_noise_epochs=training_config.get("topk_noise_epochs", 0),
+            expert_aux_loss_weight=training_config.get("expert_aux_loss_weight", 0.0),
+            expert_aux_loss_epochs=training_config.get("expert_aux_loss_epochs", 0),
+            budget_loss_weight=training_config.get("budget_loss_weight", 0.0),
+            routing_loss_weight=training_config.get("routing_loss_weight", 0.0),
+            only_aux_warmup=training_config.get("only_aux_warmup", False),
+            aux_loss_mode=training_config.get("aux_loss_mode", "warmup_only"),
+            freeze_experts_on_upper_bound=training_config.get("freeze_experts_on_upper_bound", False),
+            freeze_expert_patience=int(training_config.get("freeze_expert_patience", 5)),
+            freeze_expert_metric=training_config.get("freeze_expert_metric", "val_upper_bound"),
             threshold_r1=threshold_r1,
             threshold_r2=threshold_r2,
         )
@@ -313,46 +342,21 @@ def run_training(config: dict[str, Any]) -> dict[str, Any]:
     checkpoint = torch.load(best_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    test_soft = evaluate_soft(
-        model,
-        test_loader,
-        loss_fn,
-        device,
-        description="test-soft",
-    )
-    test_hard = evaluate_hard(
-        model,
-        test_loader,
-        device,
-        threshold_r1=threshold_r1,
-        threshold_r2=threshold_r2,
-        description="test-hard",
-    )
+    test_soft = evaluate_soft(model, test_loader, loss_fn, device, description="test-soft",)
+    test_topk = evaluate_topk(model, test_loader, loss_fn, device, description="test-topk",)
+    test_hard = evaluate_hard(model, test_loader, device, threshold_r1=threshold_r1, threshold_r2=threshold_r2, description="test-hard",)
     print("Test soft:", test_soft)
+    print("Test topk:", test_topk)
     print("Test hard:", test_hard)
 
-    with open(
-        os.path.join(output_dir, "test_metrics.json"),
-        "w",
-        encoding="utf-8",
-    ) as handle:
-        json.dump(
-            {"soft": test_soft, "hard": test_hard},
-            handle,
-            indent=2,
-        )
+    with open(os.path.join(output_dir, "test_metrics.json"), "w", encoding="utf-8") as handle:
+        json.dump({"soft": test_soft, "topk": test_topk, "hard": test_hard}, handle, indent=2)
 
-    return {
-        "best_checkpoint": best_path,
-        "test_soft": test_soft,
-        "test_hard": test_hard,
-    }
+    return {"best_checkpoint": best_path, "test_soft": test_soft, "test_topk": test_topk, "test_hard": test_hard}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Jointly train the complete rejection cascade.",
-    )
+    parser = argparse.ArgumentParser(description="Jointly train the complete rejection cascade.")
     parser.add_argument("--config", required=True, help="Path to a JSON config.")
     args = parser.parse_args()
 

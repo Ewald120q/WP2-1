@@ -47,5 +47,8 @@ single_pulse_classifier_training/rejector_analysis*/
 single_pulse_classifier_training/*.csv
 
 # Generated plot files (plot notebooks remain tracked)
-single_pulse_classifier_training/plot/*.pdf
-single_pulse_classifier_training/plot/*.png
+*.pdf
+*.png
+*.csv
+
+
