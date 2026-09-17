@@ -34,7 +34,7 @@ OUTPUT_DIR = THIS_DIR / "artifacts" / "final_014_thesis_eval"
 ROUTE_NAMES = ("R1 accepted", "R2 accepted", "R2 rejected")
 MODEL_FOR_ROUTE = ("f_small", "f_mid", "f_large")
 PRED_KEYS = {"f_small": "small_pred", "f_mid": "mid_pred", "f_large": "large_pred"}
-SNR_BIN_LABELS = ["Rest of Events"] + [f"{value}.x" for value in range(3, 9)] + ["9+"]
+SNR_BIN_LABELS = ["Rest of Events", "SNR < 3"] + [f"{value}.x" for value in range(3, 9)] + ["9+"]
 
 
 def as_jsonable(value: Any) -> Any:
@@ -98,12 +98,12 @@ def load_arrays(ensemble: str, split: str) -> dict[str, np.ndarray]:
 def snr_bin(value: float) -> str:
     if not np.isfinite(value):
         return "Rest of Events"
-    if value >= 9.0:
-        return "9+"
     rounded = int(np.rint(float(value)))
+    if rounded >= 9:
+        return "9+"
     if 3 <= rounded <= 8:
         return f"{rounded}.x"
-    return "Rest of Events"
+    return "SNR < 3"
 
 
 def snr_rounded_bin(value: float) -> str:
