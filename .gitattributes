@@ -1,1 +1,2 @@
 DM_time_dataset_creator/outputs filter=lfs diff=lfs merge=lfs -text
+single_pulse_classifier_training/final_checkpoints/** filter=lfs diff=lfs merge=lfs -text
