@@ -30,15 +30,11 @@ def _set_frozen_experts_eval(model: JointCascadeMoE) -> None:
 
 
 def _max_correct_under_budget(expert_correct: torch.Tensor, expert_counts: tuple[int, int, int]) -> int:
-    # Für die budgeted upper bound reicht ein simples OR nicht mehr.
-    # Wir müssen wissen, wie viele Samples man maximal richtig routen könnte, wenn die 70/21/9-Budgets fix sind.
     pattern_ids = (
         expert_correct[:, 0].to(torch.long) * 4
         + expert_correct[:, 1].to(torch.long) * 2
         + expert_correct[:, 2].to(torch.long)
     )
-    # Es gibt bei drei Experten nur 8 Muster: keiner richtig, nur large richtig, mid+large richtig, usw.
-    # Statt jedes Sample einzeln zu optimieren, zählen wir nur diese Muster. Das macht das Problem winzig.
     pattern_counts = torch.bincount(pattern_ids.detach().cpu(), minlength=8).tolist()
     source = 0
     pattern_offset = 1
@@ -58,8 +54,6 @@ def _max_correct_under_budget(expert_correct: torch.Tensor, expert_counts: tuple
 
     max_flow = 0
     while True:
-        # Kleiner Edmonds-Karp auf 13 Knoten. Der gefundene Flow ist direkt:
-        # "so viele Samples können unter Budget einem richtigen Experten gegeben werden".
         parent = [-1] * 13
         parent[source] = source
         queue = [source]

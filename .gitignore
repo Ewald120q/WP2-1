@@ -12,10 +12,11 @@
 *.inf
 *.json
 ./testrun3
-single_pulse_classifier_training/checkpoints/*
-single_pulse_classifier_training/data/*
-single_pulse_classifier_training/images/*
-single_pulse_classifier_training/tensorboard_runs/*
+single_pulse_classifier_training/configs
+single_pulse_classifier_training/checkpoints
+single_pulse_classifier_training/data
+single_pulse_classifier_training/images
+single_pulse_classifier_training/tensorboard_runs
 single_pulse_classifier_training/tensorboard_runs_rejector_r1_FINETUNE
 single_pulse_classifier_training/tensorboard_runs_rejector_r2_FINETUNE
 single_pulse_classifier_training/tensorboard_runs_grid
@@ -24,11 +25,16 @@ single_pulse_classifier_training/tensorboard_runs_grid_08_01_01
 single_pulse_classifier_training/_wrong_tensorboard_runs_grid_08_01_01
 single_pulse_classifier_training/tensorboard_runs_grid_08_01_01_highlights
 single_pulse_classifier_training/moe/moe_runs
+single_pulse_classifier_training/moe/artifacts
+single_pulse_classifier_training/moe/plots/ablation_plots_truncated.ipynb
 DM_time_dataset_creator/outputs/run4_thr3_256_ddm1_59000.4838657407_cfbf00000
 DM_time_dataset_creator/outputs/run4_thr5_256_ddm1_59000.4838657407_cfbf00000
 DM_time_dataset_creator/outputs/run4_thr2_ddm1_07_03
 pipeline_classifier/*.npy
 psrsigsim/*.npy
+single_pulse_classifier_training/rejector_analysis
+single_pulse_classifier_training/rejector_analysis_finetune
+single_pulse_classifier_training/rejector_checkpoints
 *.npy
 *.npz
 *.json
@@ -36,19 +42,17 @@ psrsigsim/*.npy
 *.log
 __pycache__
 
-# Local environments and run logs
 venv/
 nohup.out
 
-# Generated training and analysis data
 single_pulse_classifier_training/artifacts/
 single_pulse_classifier_training/finetune/finetune_datasets*/
 single_pulse_classifier_training/rejector_analysis*/
 single_pulse_classifier_training/*.csv
 
-# Generated plot files (plot notebooks remain tracked)
 *.pdf
 *.png
 *.csv
+
 
 
